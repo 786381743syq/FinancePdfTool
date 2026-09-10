@@ -11,11 +11,9 @@ using System.Text;
 using System.Globalization;
 using System.Threading;
 
-// Windows 10/11 原生 WinRT 命名空间，提供极速、高保真矢量 PDF 渲染引擎
-using Windows.Data.Pdf;
-using Windows.Storage;
-using Windows.Storage.Streams;
-using Windows.Foundation;
+using System.Reflection;
+using System.CodeDom.Compiler;
+using Microsoft.CSharp;
 using Point = System.Drawing.Point;
 using Size = System.Drawing.Size;
 
@@ -79,9 +77,9 @@ namespace FinancePdfApp
 
         // ================== Tab 2：PDF 提取图片 相关控件 ==================
         private string currentPdfPath = null;
-        private PdfDocument currentPdfDoc = null;
+        private IPdfEngine currentPdfEngine = null;
         private int currentPdfPageCount = 0;
-        private List<Windows.Foundation.Size> currentPdfPageSizes = new List<Windows.Foundation.Size>();
+        private List<SizeF> currentPdfPageSizes = new List<SizeF>();
         private int currentSelectedPageIndex = -1;
 
         private Label lblPdfFileInfo;
@@ -704,7 +702,7 @@ namespace FinancePdfApp
                 Cursor = Cursors.Hand
             };
             chkAutoTrimPdf.CheckedChanged += delegate {
-                if (currentPdfDoc != null && currentSelectedPageIndex >= 0)
+                if (currentPdfEngine != null && currentSelectedPageIndex >= 0)
                 {
                     RenderPdfPagePreview(currentSelectedPageIndex);
                 }
@@ -862,7 +860,10 @@ namespace FinancePdfApp
         private void ClearPdfView()
         {
             currentPdfPath = null;
-            currentPdfDoc = null;
+            if (currentPdfEngine != null)
+            {
+                currentPdfEngine.Close();
+            }
             currentPdfPageCount = 0;
             currentPdfPageSizes.Clear();
             currentSelectedPageIndex = -1;
@@ -940,44 +941,58 @@ namespace FinancePdfApp
                 lblPdfStatus.Text = "正在解析 PDF 页面...";
                 Application.DoEvents();
 
-                var storageFile = AwaitOp(StorageFile.GetFileFromPathAsync(path));
-                var doc = AwaitOp(PdfDocument.LoadFromFileAsync(storageFile));
+                if (currentPdfEngine == null)
+                {
+                    currentPdfEngine = PdfEngineFactory.Create();
+                }
 
-                currentPdfDoc = doc;
-                currentPdfPageCount = (int)doc.PageCount;
+                bool loaded = currentPdfEngine.Load(path);
+                currentPdfPageCount = currentPdfEngine.PageCount;
+
+                if (!loaded || currentPdfPageCount == 0)
+                {
+                    if (!PdfEngineFactory.IsWin10WinRtAvailable())
+                    {
+                        MessageBox.Show("提示：当前运行环境为 Windows 7 系统。\n\n由于 Windows 7 未内置 Direct2D 矢量 PDF 解析引擎：\n• 对于扫描版单据、照片发票或图片型 PDF，工具可自动极速提取高清原图；\n• 对于纯矢量排版的发票单据，建议在 Windows 10 或 Windows 11 电脑上运行导出，可享受系统级 300 DPI 超清硬件加速渲染！", "系统兼容提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        lblPdfStatus.Text = "当前系统为 Windows 7，未检测到扫描图片。建议在 Windows 10/11 电脑上运行以解析矢量 PDF。";
+                    }
+                    else
+                    {
+                        MessageBox.Show("未能成功解析该 PDF 文件，文件可能损坏或受密码保护。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        lblPdfStatus.Text = "解析 PDF 失败。";
+                    }
+                    return;
+                }
 
                 listViewPdfPages.BeginUpdate();
                 listViewPdfPages.Items.Clear();
                 currentPdfPageSizes.Clear();
 
-                for (uint i = 0; i < doc.PageCount; i++)
+                for (int i = 0; i < currentPdfPageCount; i++)
                 {
-                    using (var page = doc.GetPage(i))
-                    {
-                        var size = page.Size;
-                        currentPdfPageSizes.Add(size);
+                    SizeF size = currentPdfEngine.GetPageSize(i);
+                    currentPdfPageSizes.Add(size);
 
-                        bool isLandscape = size.Width > size.Height;
-                        string orient = isLandscape ? "横版" : "竖版";
-                        string dimStr = Math.Round(size.Width) + " x " + Math.Round(size.Height) + " pt";
+                    bool isLandscape = size.Width > size.Height;
+                    string orient = isLandscape ? "横版" : "竖版";
+                    string dimStr = Math.Round(size.Width) + " x " + Math.Round(size.Height) + " pt";
 
-                        double ratio = size.Height > 0 ? (double)size.Width / size.Height : 1.0;
-                        string note = "";
-                        if (Math.Abs(ratio - 0.707) < 0.05 || Math.Abs(ratio - 1.414) < 0.05)
-                            note = "A4/A3 国际标准";
-                        else if (Math.Abs(ratio - 1.0) < 0.05)
-                            note = "正方形";
-                        else
-                            note = "自定义画幅";
+                    double ratio = size.Height > 0 ? (double)size.Width / size.Height : 1.0;
+                    string note = "";
+                    if (Math.Abs(ratio - 0.707) < 0.05 || Math.Abs(ratio - 1.414) < 0.05)
+                        note = "A4/A3 国际标准";
+                    else if (Math.Abs(ratio - 1.0) < 0.05)
+                        note = "正方形";
+                    else
+                        note = "自定义画幅";
 
-                        ListViewItem lvi = new ListViewItem("第 " + (i + 1) + " 页");
-                        lvi.SubItems.Add(dimStr);
-                        lvi.SubItems.Add(orient);
-                        lvi.SubItems.Add(note);
-                        lvi.Checked = true;
-                        lvi.Tag = (int)i;
-                        listViewPdfPages.Items.Add(lvi);
-                    }
+                    ListViewItem lvi = new ListViewItem("第 " + (i + 1) + " 页");
+                    lvi.SubItems.Add(dimStr);
+                    lvi.SubItems.Add(orient);
+                    lvi.SubItems.Add(note);
+                    lvi.Checked = true;
+                    lvi.Tag = i;
+                    listViewPdfPages.Items.Add(lvi);
                 }
                 listViewPdfPages.EndUpdate();
 
@@ -999,7 +1014,7 @@ namespace FinancePdfApp
 
         private void RenderPdfPagePreview(int pageIndex)
         {
-            if (currentPdfDoc == null || pageIndex < 0 || pageIndex >= currentPdfPageCount)
+            if (currentPdfEngine == null || pageIndex < 0 || pageIndex >= currentPdfPageCount)
             {
                 ClearPdfPreview();
                 return;
@@ -1015,89 +1030,75 @@ namespace FinancePdfApp
                 if (boxW <= 0) boxW = 530;
                 if (boxH <= 0) boxH = 370;
 
-                using (var page = currentPdfDoc.GetPage((uint)pageIndex))
+                SizeF pageSize = currentPdfPageSizes[pageIndex];
+                float scale = Math.Min((float)boxW * 1.5f / pageSize.Width, (float)boxH * 1.5f / pageSize.Height);
+                if (scale < 0.2f) scale = 0.5f;
+                if (scale > 2.5f) scale = 2.5f;
+
+                using (Bitmap rendered = currentPdfEngine.RenderPage(pageIndex, scale))
                 {
-                    var pageSize = page.Size;
-                    float scale = Math.Min((float)boxW * 1.5f / (float)pageSize.Width, (float)boxH * 1.5f / (float)pageSize.Height);
-                    if (scale < 0.2f) scale = 0.5f;
-                    if (scale > 2.5f) scale = 2.5f;
+                    if (rendered == null) return;
+                    Image drawImg = rendered;
+                    Bitmap previewCropped = null;
+                    bool wasTrimmed = false;
 
-                    var stream = new InMemoryRandomAccessStream();
-                    var opt = new PdfPageRenderOptions();
-                    opt.DestinationWidth = (uint)Math.Max(10, Math.Round(pageSize.Width * scale));
-                    opt.DestinationHeight = (uint)Math.Max(10, Math.Round(pageSize.Height * scale));
-
-                    AwaitAction(page.RenderToStreamAsync(stream, opt));
-                    byte[] bytes = ReadStreamBytes(stream);
-                    stream.Dispose();
-
-                    using (MemoryStream ms = new MemoryStream(bytes))
+                    if (chkAutoTrimPdf != null && chkAutoTrimPdf.Checked)
                     {
-                        using (Image rendered = Image.FromStream(ms))
+                        using (Bitmap tempBmp = new Bitmap(rendered))
                         {
-                            Image drawImg = rendered;
-                            Bitmap previewCropped = null;
-                            bool wasTrimmed = false;
-
-                            if (chkAutoTrimPdf != null && chkAutoTrimPdf.Checked)
+                            Rectangle cropRect = DetectContentBounds(tempBmp);
+                            if (cropRect.Width > 30 && cropRect.Height > 30 &&
+                                (cropRect.Width < tempBmp.Width * 0.97f || cropRect.Height < tempBmp.Height * 0.97f))
                             {
-                                using (Bitmap tempBmp = new Bitmap(rendered))
-                                {
-                                    Rectangle cropRect = DetectContentBounds(tempBmp);
-                                    if (cropRect.Width > 30 && cropRect.Height > 30 &&
-                                        (cropRect.Width < tempBmp.Width * 0.97f || cropRect.Height < tempBmp.Height * 0.97f))
-                                    {
-                                        previewCropped = tempBmp.Clone(cropRect, tempBmp.PixelFormat);
-                                        drawImg = previewCropped;
-                                        wasTrimmed = true;
-                                    }
-                                }
-                            }
-
-                            try
-                            {
-                                Bitmap canvas = new Bitmap(boxW, boxH);
-                                using (Graphics g = Graphics.FromImage(canvas))
-                                {
-                                    g.Clear(Color.FromArgb(238, 242, 246));
-                                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                                    g.SmoothingMode = SmoothingMode.HighQuality;
-
-                                    float pad = 12f;
-                                    float availW = boxW - pad * 2;
-                                    float availH = boxH - pad * 2;
-                                    float fitScale = Math.Min(availW / drawImg.Width, availH / drawImg.Height);
-
-                                    float drawW = drawImg.Width * fitScale;
-                                    float drawH = drawImg.Height * fitScale;
-                                    float drawX = (boxW - drawW) / 2f;
-                                    float drawY = (boxH - drawH) / 2f;
-
-                                    using (SolidBrush shadow = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
-                                    {
-                                        g.FillRectangle(shadow, drawX + 4, drawY + 4, drawW, drawH);
-                                    }
-
-                                    g.FillRectangle(Brushes.White, drawX, drawY, drawW, drawH);
-                                    g.DrawImage(drawImg, drawX, drawY, drawW, drawH);
-
-                                    using (Pen borderPen = new Pen(Color.FromArgb(203, 213, 225), 1))
-                                    {
-                                        g.DrawRectangle(borderPen, drawX, drawY, drawW, drawH);
-                                    }
-                                }
-
-                                if (previewBoxPdf.Image != null) previewBoxPdf.Image.Dispose();
-                                previewBoxPdf.Image = canvas;
-
-                                string trimStatus = wasTrimmed ? " [✂️已智能去白边]" : "";
-                                lblCurrentPageInfo.Text = "第 " + (pageIndex + 1) + " / " + currentPdfPageCount + " 页" + trimStatus;
-                            }
-                            finally
-                            {
-                                if (previewCropped != null) previewCropped.Dispose();
+                                previewCropped = tempBmp.Clone(cropRect, tempBmp.PixelFormat);
+                                drawImg = previewCropped;
+                                wasTrimmed = true;
                             }
                         }
+                    }
+
+                    try
+                    {
+                        Bitmap canvas = new Bitmap(boxW, boxH);
+                        using (Graphics g = Graphics.FromImage(canvas))
+                        {
+                            g.Clear(Color.FromArgb(238, 242, 246));
+                            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            g.SmoothingMode = SmoothingMode.HighQuality;
+
+                            float pad = 12f;
+                            float availW = boxW - pad * 2;
+                            float availH = boxH - pad * 2;
+                            float fitScale = Math.Min(availW / drawImg.Width, availH / drawImg.Height);
+
+                            float drawW = drawImg.Width * fitScale;
+                            float drawH = drawImg.Height * fitScale;
+                            float drawX = (boxW - drawW) / 2f;
+                            float drawY = (boxH - drawH) / 2f;
+
+                            using (SolidBrush shadow = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
+                            {
+                                g.FillRectangle(shadow, drawX + 4, drawY + 4, drawW, drawH);
+                            }
+
+                            g.FillRectangle(Brushes.White, drawX, drawY, drawW, drawH);
+                            g.DrawImage(drawImg, drawX, drawY, drawW, drawH);
+
+                            using (Pen borderPen = new Pen(Color.FromArgb(203, 213, 225), 1))
+                            {
+                                g.DrawRectangle(borderPen, drawX, drawY, drawW, drawH);
+                            }
+                        }
+
+                        if (previewBoxPdf.Image != null) previewBoxPdf.Image.Dispose();
+                        previewBoxPdf.Image = canvas;
+
+                        string trimStatus = wasTrimmed ? " [✂️已智能去白边]" : "";
+                        lblCurrentPageInfo.Text = "第 " + (pageIndex + 1) + " / " + currentPdfPageCount + " 页" + trimStatus;
+                    }
+                    finally
+                    {
+                        if (previewCropped != null) previewCropped.Dispose();
                     }
                 }
             }
@@ -1205,97 +1206,88 @@ namespace FinancePdfApp
                 Directory.CreateDirectory(p.OutputDir);
             }
 
-            var storageFile = AwaitOp(StorageFile.GetFileFromPathAsync(p.PdfPath));
-            var doc = AwaitOp(PdfDocument.LoadFromFileAsync(storageFile));
-
-            float dpiScale = 4.1667f;
-            if (p.DpiMode == 1) dpiScale = 2.0833f;
-            else if (p.DpiMode == 2) dpiScale = 1.3333f;
-
-            string pdfBaseName = Path.GetFileNameWithoutExtension(p.PdfPath);
-            int total = p.PageIndices.Count;
-            int digits = total > 99 ? 3 : 2;
-
-            List<string> exportedFiles = new List<string>();
-
-            for (int i = 0; i < total; i++)
+            using (IPdfEngine engine = PdfEngineFactory.Create())
             {
-                int pageIdx = p.PageIndices[i];
-                int progress = (int)((i + 0.5f) / total * 100);
-                workerPdfToImg.ReportProgress(progress, "正在导出第 " + (i + 1) + "/" + total + " 页 (PDF第 " + (pageIdx + 1) + " 页)...");
-
-                using (var page = doc.GetPage((uint)pageIdx))
+                if (!engine.Load(p.PdfPath))
                 {
-                    var pageSize = page.Size;
-                    var stream = new InMemoryRandomAccessStream();
-                    var opt = new PdfPageRenderOptions();
-                    opt.DestinationWidth = (uint)Math.Max(10, Math.Round(pageSize.Width * dpiScale));
-                    opt.DestinationHeight = (uint)Math.Max(10, Math.Round(pageSize.Height * dpiScale));
+                    throw new InvalidOperationException("无法解析该 PDF 文件进行导出。");
+                }
 
-                    AwaitAction(page.RenderToStreamAsync(stream, opt));
-                    byte[] bytes = ReadStreamBytes(stream);
-                    stream.Dispose();
+                float dpiScale = 4.1667f;
+                if (p.DpiMode == 1) dpiScale = 2.0833f;
+                else if (p.DpiMode == 2) dpiScale = 1.3333f;
 
-                    using (MemoryStream ms = new MemoryStream(bytes))
+                string pdfBaseName = Path.GetFileNameWithoutExtension(p.PdfPath);
+                int total = p.PageIndices.Count;
+                int digits = total > 99 ? 3 : 2;
+
+                List<string> exportedFiles = new List<string>();
+
+                for (int i = 0; i < total; i++)
+                {
+                    int pageIdx = p.PageIndices[i];
+                    int progress = (int)((i + 0.5f) / total * 100);
+                    workerPdfToImg.ReportProgress(progress, "正在导出第 " + (i + 1) + "/" + total + " 页 (PDF第 " + (pageIdx + 1) + " 页)...");
+
+                    using (Bitmap rendered = engine.RenderPage(pageIdx, dpiScale))
                     {
-                        using (Image rendered = Image.FromStream(ms))
+                        if (rendered == null) continue;
+
+                        using (Bitmap finalBmp = new Bitmap(rendered.Width, rendered.Height, PixelFormat.Format32bppRgb))
                         {
-                            using (Bitmap finalBmp = new Bitmap(rendered.Width, rendered.Height, PixelFormat.Format32bppRgb))
+                            using (Graphics g = Graphics.FromImage(finalBmp))
                             {
-                                using (Graphics g = Graphics.FromImage(finalBmp))
-                                {
-                                    g.Clear(Color.White);
-                                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                                    g.SmoothingMode = SmoothingMode.HighQuality;
-                                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                                    g.DrawImage(rendered, 0, 0, rendered.Width, rendered.Height);
-                                }
-
-                                string pageNumStr = (pageIdx + 1).ToString().PadLeft(digits, '0');
-                                string ext = p.IsPng ? ".png" : ".jpg";
-                                string outFileName = pdfBaseName + "_第" + pageNumStr + "页" + ext;
-                                string outFilePath = Path.Combine(p.OutputDir, outFileName);
-
-                                Bitmap saveBmp = finalBmp;
-                                Bitmap croppedBmp = null;
-                                if (p.AutoTrim)
-                                {
-                                    Rectangle contentRect = DetectContentBounds(finalBmp);
-                                    if (contentRect.Width > 50 && contentRect.Height > 50 &&
-                                        (contentRect.Width < finalBmp.Width * 0.97f || contentRect.Height < finalBmp.Height * 0.97f))
-                                    {
-                                        croppedBmp = finalBmp.Clone(contentRect, finalBmp.PixelFormat);
-                                        saveBmp = croppedBmp;
-                                    }
-                                }
-
-                                try
-                                {
-                                    if (p.IsPng)
-                                    {
-                                        saveBmp.Save(outFilePath, ImageFormat.Png);
-                                    }
-                                    else
-                                    {
-                                        ImageCodecInfo encoder = GetEncoder(ImageFormat.Jpeg);
-                                        EncoderParameters encParams = new EncoderParameters(1);
-                                        encParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
-                                        saveBmp.Save(outFilePath, encoder, encParams);
-                                    }
-                                }
-                                finally
-                                {
-                                    if (croppedBmp != null) croppedBmp.Dispose();
-                                }
-
-                                exportedFiles.Add(outFilePath);
+                                g.Clear(Color.White);
+                                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                g.SmoothingMode = SmoothingMode.HighQuality;
+                                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                                g.DrawImage(rendered, 0, 0, rendered.Width, rendered.Height);
                             }
+
+                            string pageNumStr = (pageIdx + 1).ToString().PadLeft(digits, '0');
+                            string ext = p.IsPng ? ".png" : ".jpg";
+                            string outFileName = pdfBaseName + "_第" + pageNumStr + "页" + ext;
+                            string outFilePath = Path.Combine(p.OutputDir, outFileName);
+
+                            Bitmap saveBmp = finalBmp;
+                            Bitmap croppedBmp = null;
+                            if (p.AutoTrim)
+                            {
+                                Rectangle contentRect = DetectContentBounds(finalBmp);
+                                if (contentRect.Width > 50 && contentRect.Height > 50 &&
+                                    (contentRect.Width < finalBmp.Width * 0.97f || contentRect.Height < finalBmp.Height * 0.97f))
+                                {
+                                    croppedBmp = finalBmp.Clone(contentRect, finalBmp.PixelFormat);
+                                    saveBmp = croppedBmp;
+                                }
+                            }
+
+                            try
+                            {
+                                if (p.IsPng)
+                                {
+                                    saveBmp.Save(outFilePath, ImageFormat.Png);
+                                }
+                                else
+                                {
+                                    ImageCodecInfo encoder = GetEncoder(ImageFormat.Jpeg);
+                                    EncoderParameters encParams = new EncoderParameters(1);
+                                    encParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+                                    saveBmp.Save(outFilePath, encoder, encParams);
+                                }
+                            }
+                            finally
+                            {
+                                if (croppedBmp != null) croppedBmp.Dispose();
+                            }
+
+                            exportedFiles.Add(outFilePath);
                         }
                     }
                 }
-            }
 
-            e.Result = new object[] { exportedFiles.Count, p.OutputDir };
+                e.Result = new object[] { exportedFiles.Count, p.OutputDir };
+            }
         }
 
         private void WorkerPdfToImg_ProgressChanged(object sender, ProgressChangedEventArgs e)
@@ -1336,78 +1328,7 @@ namespace FinancePdfApp
 
         #endregion
 
-        #region ================== WinRT 异步操作辅助封装 ==================
 
-        private static T AwaitOp<T>(IAsyncOperation<T> op)
-        {
-            ManualResetEvent done = new ManualResetEvent(false);
-            T res = default(T);
-            Exception err = null;
-            op.Completed = new AsyncOperationCompletedHandler<T>((info, status) =>
-            {
-                try
-                {
-                    if (status == AsyncStatus.Completed)
-                    {
-                        res = info.GetResults();
-                    }
-                    else
-                    {
-                        err = info.ErrorCode;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    err = ex;
-                }
-                finally
-                {
-                    done.Set();
-                }
-            });
-            done.WaitOne();
-            if (err != null) throw err;
-            return res;
-        }
-
-        private static void AwaitAction(IAsyncAction action)
-        {
-            ManualResetEvent done = new ManualResetEvent(false);
-            Exception err = null;
-            action.Completed = new AsyncActionCompletedHandler((info, status) =>
-            {
-                try
-                {
-                    if (status != AsyncStatus.Completed)
-                    {
-                        err = info.ErrorCode;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    err = ex;
-                }
-                finally
-                {
-                    done.Set();
-                }
-            });
-            done.WaitOne();
-            if (err != null) throw err;
-        }
-
-        private static byte[] ReadStreamBytes(InMemoryRandomAccessStream stream)
-        {
-            using (var reader = new DataReader(stream.GetInputStreamAt(0)))
-            {
-                AwaitOp(reader.LoadAsync((uint)stream.Size));
-                byte[] bytes = new byte[stream.Size];
-                reader.ReadBytes(bytes);
-                return bytes;
-            }
-        }
-
-        #endregion
 
         #region ================== 全局拖拽与通用事件 ==================
 
@@ -2176,14 +2097,409 @@ namespace FinancePdfApp
         {
             try
             {
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+                {
+                    try { MessageBox.Show("程序运行发生异常：\n" + (e.ExceptionObject != null ? e.ExceptionObject.ToString() : "未知错误"), "运行提示", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
+                };
+            }
+            catch { }
+
+            try
+            {
                 SetProcessDPIAware();
             }
             catch { }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm(args));
+            try
+            {
+                Application.Run(new MainForm(args));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("程序启动错误：\n" + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
     }
+
+    #region ================== 跨版本兼容 PDF 引擎架构 (支持 Win7/8/10/11) ==================
+
+    public interface IPdfEngine : IDisposable
+    {
+        bool Load(string pdfPath);
+        int PageCount { get; }
+        SizeF GetPageSize(int pageIndex);
+        Bitmap RenderPage(int pageIndex, float scale);
+        void Close();
+    }
+
+    public class DynamicEngineWrapper : IPdfEngine
+    {
+        private object rawEngine;
+        private MethodInfo mLoad;
+        private MethodInfo mGetPageCount;
+        private MethodInfo mGetPageSize;
+        private MethodInfo mRenderPage;
+        private MethodInfo mClose;
+
+        public DynamicEngineWrapper(object raw)
+        {
+            this.rawEngine = raw;
+            Type t = raw.GetType();
+            mLoad = t.GetMethod("Load");
+            mGetPageCount = t.GetMethod("GetPageCount");
+            mGetPageSize = t.GetMethod("GetPageSize");
+            mRenderPage = t.GetMethod("RenderPage");
+            mClose = t.GetMethod("Close");
+        }
+
+        public bool Load(string pdfPath)
+        {
+            try { return (bool)mLoad.Invoke(rawEngine, new object[] { pdfPath }); }
+            catch { return false; }
+        }
+
+        public int PageCount
+        {
+            get
+            {
+                try { return (int)mGetPageCount.Invoke(rawEngine, null); }
+                catch { return 0; }
+            }
+        }
+
+        public SizeF GetPageSize(int pageIndex)
+        {
+            try { return (SizeF)mGetPageSize.Invoke(rawEngine, new object[] { pageIndex }); }
+            catch { return SizeF.Empty; }
+        }
+
+        public Bitmap RenderPage(int pageIndex, float scale)
+        {
+            try { return (Bitmap)mRenderPage.Invoke(rawEngine, new object[] { pageIndex, scale }); }
+            catch { return null; }
+        }
+
+        public void Close()
+        {
+            try { mClose.Invoke(rawEngine, null); }
+            catch { }
+        }
+
+        public void Dispose()
+        {
+            Close();
+        }
+    }
+
+    public static class PdfEngineFactory
+    {
+        private static Type cachedWinRtType = null;
+        private static bool winRtInitAttempted = false;
+
+        public static bool IsWin10WinRtAvailable()
+        {
+            try
+            {
+                if (Environment.OSVersion.Version.Major < 10 && !(Environment.OSVersion.Version.Major == 6 && Environment.OSVersion.Version.Minor >= 2))
+                    return false;
+
+                string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                string winData = Path.Combine(winDir, @"System32\WinMetadata\Windows.Data.winmd");
+                return File.Exists(winData);
+            }
+            catch { return false; }
+        }
+
+        public static IPdfEngine Create()
+        {
+            if (IsWin10WinRtAvailable())
+            {
+                try
+                {
+                    if (!winRtInitAttempted)
+                    {
+                        winRtInitAttempted = true;
+                        InitWinRtEngine();
+                    }
+                    if (cachedWinRtType != null)
+                    {
+                        object inst = Activator.CreateInstance(cachedWinRtType);
+                        return new DynamicEngineWrapper(inst);
+                    }
+                }
+                catch { }
+            }
+
+            return new FallbackPdfEngine();
+        }
+
+        private static void InitWinRtEngine()
+        {
+            string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            string netDir = Path.Combine(winDir, @"Microsoft.NET\Framework64\v4.0.30319");
+            if (!Directory.Exists(netDir)) netDir = Path.Combine(winDir, @"Microsoft.NET\Framework\v4.0.30319");
+            string metaDir = Path.Combine(winDir, @"System32\WinMetadata");
+
+            string code = @"
+using System;
+using System.Drawing;
+using System.IO;
+using System.Collections.Generic;
+using System.Threading;
+using Windows.Data.Pdf;
+using Windows.Storage;
+using Windows.Storage.Streams;
+using Windows.Foundation;
+
+namespace DynamicWinRt
+{
+    public class Engine
+    {
+        private PdfDocument doc;
+        private List<SizeF> pageSizes = new List<SizeF>();
+
+        public bool Load(string pdfPath)
+        {
+            Close();
+            try
+            {
+                var storageFile = AwaitOp(StorageFile.GetFileFromPathAsync(pdfPath));
+                doc = AwaitOp(PdfDocument.LoadFromFileAsync(storageFile));
+                int count = (int)doc.PageCount;
+                for (uint i = 0; i < (uint)count; i++)
+                {
+                    using (var page = doc.GetPage(i))
+                    {
+                        pageSizes.Add(new SizeF((float)page.Size.Width, (float)page.Size.Height));
+                    }
+                }
+                return true;
+            }
+            catch
+            {
+                Close();
+                return false;
+            }
+        }
+
+        public int GetPageCount() { return doc != null ? (int)doc.PageCount : 0; }
+
+        public SizeF GetPageSize(int index)
+        {
+            if (index >= 0 && index < pageSizes.Count) return pageSizes[index];
+            return SizeF.Empty;
+        }
+
+        public Bitmap RenderPage(int index, float scale)
+        {
+            if (doc == null || index < 0 || index >= (int)doc.PageCount) return null;
+            try
+            {
+                using (var page = doc.GetPage((uint)index))
+                {
+                    uint renderW = (uint)Math.Max(1, (int)Math.Round(page.Size.Width * scale));
+                    uint renderH = (uint)Math.Max(1, (int)Math.Round(page.Size.Height * scale));
+
+                    var options = new PdfPageRenderOptions();
+                    options.DestinationWidth = renderW;
+                    options.DestinationHeight = renderH;
+
+                    using (var stream = new InMemoryRandomAccessStream())
+                    {
+                        AwaitAction(page.RenderToStreamAsync(stream, options));
+                        using (var reader = new DataReader(stream.GetInputStreamAt(0)))
+                        {
+                            AwaitOp(reader.LoadAsync((uint)stream.Size));
+                            byte[] bytes = new byte[stream.Size];
+                            reader.ReadBytes(bytes);
+                            using (MemoryStream ms = new MemoryStream(bytes))
+                            using (Bitmap raw = new Bitmap(ms))
+                            {
+                                return new Bitmap(raw);
+                            }
+                        }
+                    }
+                }
+            }
+            catch { return null; }
+        }
+
+        private static T AwaitOp<T>(IAsyncOperation<T> op)
+        {
+            ManualResetEvent done = new ManualResetEvent(false);
+            T res = default(T);
+            Exception err = null;
+            op.Completed = new AsyncOperationCompletedHandler<T>((info, status) =>
+            {
+                try
+                {
+                    if (status == AsyncStatus.Completed) res = info.GetResults();
+                    else err = info.ErrorCode;
+                }
+                catch (Exception ex) { err = ex; }
+                finally { done.Set(); }
+            });
+            done.WaitOne();
+            if (err != null) throw err;
+            return res;
+        }
+
+        private static void AwaitAction(IAsyncAction action)
+        {
+            ManualResetEvent done = new ManualResetEvent(false);
+            Exception err = null;
+            action.Completed = new AsyncActionCompletedHandler((info, status) =>
+            {
+                try
+                {
+                    if (status != AsyncStatus.Completed) err = info.ErrorCode;
+                }
+                catch (Exception ex) { err = ex; }
+                finally { done.Set(); }
+            });
+            done.WaitOne();
+            if (err != null) throw err;
+        }
+
+        public void Close()
+        {
+            doc = null;
+            pageSizes.Clear();
+        }
+    }
+}";
+
+            var provider = new CSharpCodeProvider();
+            var parameters = new CompilerParameters();
+            parameters.GenerateInMemory = true;
+            parameters.ReferencedAssemblies.Add("System.dll");
+            parameters.ReferencedAssemblies.Add("System.Drawing.dll");
+            parameters.ReferencedAssemblies.Add(Path.Combine(netDir, "System.Runtime.dll"));
+            parameters.ReferencedAssemblies.Add(Path.Combine(netDir, "System.Runtime.WindowsRuntime.dll"));
+            parameters.ReferencedAssemblies.Add(Path.Combine(metaDir, "Windows.Foundation.winmd"));
+            parameters.ReferencedAssemblies.Add(Path.Combine(metaDir, "Windows.Data.winmd"));
+            parameters.ReferencedAssemblies.Add(Path.Combine(metaDir, "Windows.Storage.winmd"));
+
+            var results = provider.CompileAssemblyFromSource(parameters, code);
+            if (!results.Errors.HasErrors)
+            {
+                cachedWinRtType = results.CompiledAssembly.GetType("DynamicWinRt.Engine");
+            }
+        }
+    }
+
+    public class FallbackPdfEngine : IPdfEngine
+    {
+        private List<Bitmap> extractedImages = new List<Bitmap>();
+
+        public bool Load(string pdfPath)
+        {
+            Close();
+            try
+            {
+                byte[] pdfBytes = File.ReadAllBytes(pdfPath);
+                int idx = 0;
+                while (idx < pdfBytes.Length - 10)
+                {
+                    // 查找 JPEG 文件头 0xFF, 0xD8, 0xFF
+                    if (pdfBytes[idx] == 0xFF && pdfBytes[idx + 1] == 0xD8 && pdfBytes[idx + 2] == 0xFF)
+                    {
+                        // 查找 JPEG 文件尾 0xFF, 0xD9
+                        int endIdx = -1;
+                        for (int j = idx + 3; j < pdfBytes.Length - 1; j++)
+                        {
+                            if (pdfBytes[j] == 0xFF && pdfBytes[j + 1] == 0xD9)
+                            {
+                                endIdx = j + 2;
+                                break;
+                            }
+                        }
+
+                        if (endIdx > idx)
+                        {
+                            try
+                            {
+                                int len = endIdx - idx;
+                                byte[] imgData = new byte[len];
+                                Array.Copy(pdfBytes, idx, imgData, 0, len);
+                                using (MemoryStream ms = new MemoryStream(imgData))
+                                {
+                                    Bitmap b = new Bitmap(ms);
+                                    if (b.Width >= 100 && b.Height >= 100)
+                                    {
+                                        extractedImages.Add(new Bitmap(b));
+                                    }
+                                }
+                            }
+                            catch { }
+                            idx = endIdx;
+                            continue;
+                        }
+                    }
+                    idx++;
+                }
+                return extractedImages.Count > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public int PageCount
+        {
+            get { return extractedImages.Count; }
+        }
+
+        public SizeF GetPageSize(int pageIndex)
+        {
+            if (pageIndex >= 0 && pageIndex < extractedImages.Count)
+                return new SizeF(extractedImages[pageIndex].Width, extractedImages[pageIndex].Height);
+            return SizeF.Empty;
+        }
+
+        public Bitmap RenderPage(int pageIndex, float scale)
+        {
+            if (pageIndex >= 0 && pageIndex < extractedImages.Count)
+            {
+                Bitmap src = extractedImages[pageIndex];
+                if (Math.Abs(scale - 1.0f) < 0.05f)
+                {
+                    return new Bitmap(src);
+                }
+
+                int targetW = Math.Max(1, (int)Math.Round(src.Width * scale));
+                int targetH = Math.Max(1, (int)Math.Round(src.Height * scale));
+                Bitmap res = new Bitmap(targetW, targetH, PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(res))
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.SmoothingMode = SmoothingMode.HighQuality;
+                    g.DrawImage(src, 0, 0, targetW, targetH);
+                }
+                return res;
+            }
+            return null;
+        }
+
+        public void Close()
+        {
+            foreach (var b in extractedImages)
+            {
+                b.Dispose();
+            }
+            extractedImages.Clear();
+        }
+
+        public void Dispose()
+        {
+            Close();
+        }
+    }
+
+    #endregion
 
     public class HelpForm : Form
     {
