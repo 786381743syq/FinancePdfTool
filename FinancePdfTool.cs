@@ -643,7 +643,7 @@ namespace FinancePdfApp
             {
                 Text = "导出格式与分辨率",
                 Location = new Point(15, 6),
-                Size = new Size(485, 96),
+                Size = new Size(540, 96),
                 ForeColor = Color.FromArgb(30, 41, 59)
             };
 
@@ -651,14 +651,16 @@ namespace FinancePdfApp
             {
                 Text = "格式：",
                 Location = new Point(12, 27),
-                AutoSize = true,
+                Size = new Size(56, 20),
+                TextAlign = ContentAlignment.MiddleRight,
+                AutoSize = false,
                 ForeColor = Color.FromArgb(51, 65, 85)
             };
 
             rbFormatPng = new RadioButton
             {
-                Text = "⭐ PNG 高清无损 (公章发票极清·推荐)",
-                Location = new Point(60, 25),
+                Text = "⭐ PNG 高清无损 (发票公章推荐)",
+                Location = new Point(74, 25),
                 AutoSize = true,
                 Checked = true,
                 ForeColor = Color.FromArgb(15, 23, 42)
@@ -667,7 +669,7 @@ namespace FinancePdfApp
             rbFormatJpg = new RadioButton
             {
                 Text = "📁 JPG 通用压缩 (体积小·适合微信)",
-                Location = new Point(310, 25),
+                Location = new Point(296, 25),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(15, 23, 42)
             };
@@ -676,20 +678,22 @@ namespace FinancePdfApp
             {
                 Text = "清晰度：",
                 Location = new Point(12, 59),
-                AutoSize = true,
+                Size = new Size(56, 20),
+                TextAlign = ContentAlignment.MiddleRight,
+                AutoSize = false,
                 ForeColor = Color.FromArgb(51, 65, 85)
             };
 
             cmbDpi = new ComboBox
             {
-                Location = new Point(68, 56),
-                Size = new Size(405, 26),
+                Location = new Point(74, 56),
+                Size = new Size(450, 26),
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
             cmbDpi.Items.AddRange(new object[] {
-                "300 DPI - 超清打印 (3x高精 · 票据公章发票极佳清晰度 · 推荐)",
-                "150 DPI - 高清阅读 (1.5x放大 · 适合电脑屏幕与归档)",
-                "96 DPI - 标准轻量 (1x原生 · 体积最小)"
+                "300 DPI - 超清打印 (3x高精 · 票据公章发票极清 · 推荐)",
+                "150 DPI - 高清阅读 (1.5x放大 · 适合日常浏览与归档)",
+                "96 DPI - 标准轻量 (1x原生 · 适合快速传输与极小体积)"
             });
             cmbDpi.SelectedIndex = 0;
 
@@ -703,15 +707,15 @@ namespace FinancePdfApp
             GroupBox grpRange = new GroupBox
             {
                 Text = "导出范围",
-                Location = new Point(510, 6),
-                Size = new Size(485, 96),
+                Location = new Point(565, 6),
+                Size = new Size(430, 96),
                 ForeColor = Color.FromArgb(30, 41, 59)
             };
 
             rbRangeAll = new RadioButton
             {
                 Text = "导出全部页面",
-                Location = new Point(15, 26),
+                Location = new Point(15, 25),
                 AutoSize = true,
                 Checked = true,
                 ForeColor = Color.FromArgb(15, 23, 42)
@@ -719,7 +723,7 @@ namespace FinancePdfApp
 
             rbRangeChecked = new RadioButton
             {
-                Text = "仅导出左侧列表中已勾选的页面",
+                Text = "仅导出列表勾选页",
                 Location = new Point(15, 58),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(15, 23, 42)
@@ -728,7 +732,7 @@ namespace FinancePdfApp
             rbRangeCurrent = new RadioButton
             {
                 Text = "仅导出当前预览页",
-                Location = new Point(275, 58),
+                Location = new Point(175, 58),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(15, 23, 42)
             };
