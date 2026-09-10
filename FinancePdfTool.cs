@@ -454,33 +454,9 @@ namespace FinancePdfApp
             {
                 Text = "就绪。可直接拖拽图片文件或文件夹到窗口中。",
                 Location = new Point(15, 147),
-                Size = new Size(460, 22),
+                Size = new Size(780, 22),
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.FromArgb(71, 85, 105)
-            };
-
-            LinkLabel lnkHelp1 = new LinkLabel
-            {
-                Text = "💡 使用须知与排版说明",
-                Location = new Point(480, 149),
-                AutoSize = true,
-                LinkColor = Color.FromArgb(79, 70, 229),
-                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
-                Cursor = Cursors.Hand
-            };
-            lnkHelp1.LinkClicked += delegate { ShowHelpDialog(0); };
-
-            LinkLabel lnkGithub1 = new LinkLabel
-            {
-                Text = "🔗 GitHub 主页",
-                Location = new Point(660, 149),
-                AutoSize = true,
-                LinkColor = Color.FromArgb(100, 116, 139),
-                Font = new Font("Microsoft YaHei UI", 9F),
-                Cursor = Cursors.Hand
-            };
-            lnkGithub1.LinkClicked += delegate {
-                try { System.Diagnostics.Process.Start("https://github.com/786381743syq/FinancePdfTool"); } catch { }
             };
 
             progressBar = new ProgressBar
@@ -494,7 +470,7 @@ namespace FinancePdfApp
             btnGenerate.Location = new Point(810, 146);
             btnGenerate.Click += BtnGenerate_Click;
 
-            bottomPanel.Controls.AddRange(new Control[] { lblStatus, lnkHelp1, lnkGithub1, progressBar, btnGenerate });
+            bottomPanel.Controls.AddRange(new Control[] { lblStatus, progressBar, btnGenerate });
 
             tabPageImgToPdf.Controls.Add(bottomPanel);
             tabPageImgToPdf.Controls.Add(pnlPreview);
@@ -828,33 +804,9 @@ namespace FinancePdfApp
             {
                 Text = "就绪。请选择或拖拽 PDF 文件到窗口中。",
                 Location = new Point(15, 147),
-                Size = new Size(440, 22),
+                Size = new Size(760, 22),
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.FromArgb(71, 85, 105)
-            };
-
-            LinkLabel lnkHelp2 = new LinkLabel
-            {
-                Text = "💡 使用须知与导出说明",
-                Location = new Point(460, 149),
-                AutoSize = true,
-                LinkColor = Color.FromArgb(79, 70, 229),
-                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
-                Cursor = Cursors.Hand
-            };
-            lnkHelp2.LinkClicked += delegate { ShowHelpDialog(1); };
-
-            LinkLabel lnkGithub2 = new LinkLabel
-            {
-                Text = "🔗 GitHub 主页",
-                Location = new Point(640, 149),
-                AutoSize = true,
-                LinkColor = Color.FromArgb(100, 116, 139),
-                Font = new Font("Microsoft YaHei UI", 9F),
-                Cursor = Cursors.Hand
-            };
-            lnkGithub2.LinkClicked += delegate {
-                try { System.Diagnostics.Process.Start("https://github.com/786381743syq/FinancePdfTool"); } catch { }
             };
 
             progressBarPdf = new ProgressBar
@@ -868,7 +820,7 @@ namespace FinancePdfApp
             btnExportImages.Location = new Point(790, 146);
             btnExportImages.Click += BtnExportImages_Click;
 
-            bottomPanelPdf.Controls.AddRange(new Control[] { lblPdfStatus, lnkHelp2, lnkGithub2, progressBarPdf, btnExportImages });
+            bottomPanelPdf.Controls.AddRange(new Control[] { lblPdfStatus, progressBarPdf, btnExportImages });
 
             tabPagePdfToImg.Controls.Add(bottomPanelPdf);
             tabPagePdfToImg.Controls.Add(pnlPdfPreview);
