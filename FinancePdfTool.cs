@@ -170,6 +170,14 @@ namespace FinancePdfApp
             workerPdfToImg.RunWorkerCompleted += WorkerPdfToImg_RunWorkerCompleted;
         }
 
+        private void ShowHelpDialog(int initialTab = 0)
+        {
+            using (HelpForm dlg = new HelpForm(initialTab))
+            {
+                dlg.ShowDialog(this);
+            }
+        }
+
         #region ================== Tab 1：图片合成 PDF UI 与逻辑 ==================
 
         private void BuildTabImgToPdf()
@@ -214,10 +222,15 @@ namespace FinancePdfApp
                 ClearPreview();
             };
 
+            Button btnHelpTab1 = CreateButton("💡 使用须知", 105, 34, Color.FromArgb(238, 242, 255), Color.FromArgb(67, 56, 202));
+            btnHelpTab1.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold);
+            btnHelpTab1.Location = new Point(892, 10);
+            btnHelpTab1.Click += delegate { ShowHelpDialog(0); };
+
             topBar.Controls.AddRange(new Control[] {
                 btnAddFiles, btnAddFolder,
                 btnMoveUp, btnMoveDown, btnRotate,
-                btnRemove, btnClear
+                btnRemove, btnClear, btnHelpTab1
             });
 
             Panel dividerTop = new Panel
@@ -440,9 +453,33 @@ namespace FinancePdfApp
             {
                 Text = "就绪。可直接拖拽图片文件或文件夹到窗口中。",
                 Location = new Point(15, 147),
-                Size = new Size(780, 22),
+                Size = new Size(460, 22),
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.FromArgb(71, 85, 105)
+            };
+
+            LinkLabel lnkHelp1 = new LinkLabel
+            {
+                Text = "💡 使用须知与排版说明",
+                Location = new Point(480, 149),
+                AutoSize = true,
+                LinkColor = Color.FromArgb(79, 70, 229),
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            lnkHelp1.LinkClicked += delegate { ShowHelpDialog(0); };
+
+            LinkLabel lnkGithub1 = new LinkLabel
+            {
+                Text = "🔗 GitHub 主页",
+                Location = new Point(660, 149),
+                AutoSize = true,
+                LinkColor = Color.FromArgb(100, 116, 139),
+                Font = new Font("Microsoft YaHei UI", 9F),
+                Cursor = Cursors.Hand
+            };
+            lnkGithub1.LinkClicked += delegate {
+                try { System.Diagnostics.Process.Start("https://github.com/786381743syq/FinancePdfTool"); } catch { }
             };
 
             progressBar = new ProgressBar
@@ -456,7 +493,7 @@ namespace FinancePdfApp
             btnGenerate.Location = new Point(810, 146);
             btnGenerate.Click += BtnGenerate_Click;
 
-            bottomPanel.Controls.AddRange(new Control[] { lblStatus, progressBar, btnGenerate });
+            bottomPanel.Controls.AddRange(new Control[] { lblStatus, lnkHelp1, lnkGithub1, progressBar, btnGenerate });
 
             tabPageImgToPdf.Controls.Add(bottomPanel);
             tabPageImgToPdf.Controls.Add(pnlPreview);
@@ -493,15 +530,20 @@ namespace FinancePdfApp
             lblPdfFileInfo = new Label
             {
                 Location = new Point(390, 10),
-                Size = new Size(605, 34),
+                Size = new Size(490, 34),
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.FromArgb(30, 41, 59),
                 Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
                 Text = "未加载任何 PDF 文件。请点击左侧按钮或直接拖拽 PDF 到此处。"
             };
 
+            Button btnHelpTab2 = CreateButton("💡 使用须知", 105, 34, Color.FromArgb(238, 242, 255), Color.FromArgb(67, 56, 202));
+            btnHelpTab2.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold);
+            btnHelpTab2.Location = new Point(892, 10);
+            btnHelpTab2.Click += delegate { ShowHelpDialog(1); };
+
             topBarPdf.Controls.AddRange(new Control[] {
-                btnSelectPdf, btnOpenPdfDir, btnClearPdf, lblPdfFileInfo
+                btnSelectPdf, btnOpenPdfDir, btnClearPdf, lblPdfFileInfo, btnHelpTab2
             });
 
             Panel dividerTop = new Panel
@@ -768,9 +810,33 @@ namespace FinancePdfApp
             {
                 Text = "就绪。请选择或拖拽 PDF 文件到窗口中。",
                 Location = new Point(15, 147),
-                Size = new Size(760, 22),
+                Size = new Size(440, 22),
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.FromArgb(71, 85, 105)
+            };
+
+            LinkLabel lnkHelp2 = new LinkLabel
+            {
+                Text = "💡 使用须知与导出说明",
+                Location = new Point(460, 149),
+                AutoSize = true,
+                LinkColor = Color.FromArgb(79, 70, 229),
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            lnkHelp2.LinkClicked += delegate { ShowHelpDialog(1); };
+
+            LinkLabel lnkGithub2 = new LinkLabel
+            {
+                Text = "🔗 GitHub 主页",
+                Location = new Point(640, 149),
+                AutoSize = true,
+                LinkColor = Color.FromArgb(100, 116, 139),
+                Font = new Font("Microsoft YaHei UI", 9F),
+                Cursor = Cursors.Hand
+            };
+            lnkGithub2.LinkClicked += delegate {
+                try { System.Diagnostics.Process.Start("https://github.com/786381743syq/FinancePdfTool"); } catch { }
             };
 
             progressBarPdf = new ProgressBar
@@ -784,7 +850,7 @@ namespace FinancePdfApp
             btnExportImages.Location = new Point(790, 146);
             btnExportImages.Click += BtnExportImages_Click;
 
-            bottomPanelPdf.Controls.AddRange(new Control[] { lblPdfStatus, progressBarPdf, btnExportImages });
+            bottomPanelPdf.Controls.AddRange(new Control[] { lblPdfStatus, lnkHelp2, lnkGithub2, progressBarPdf, btnExportImages });
 
             tabPagePdfToImg.Controls.Add(bottomPanelPdf);
             tabPagePdfToImg.Controls.Add(pnlPdfPreview);
@@ -2014,6 +2080,263 @@ namespace FinancePdfApp
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MainForm(args));
+        }
+    }
+
+    public class HelpForm : Form
+    {
+        private const string GITHUB_URL = "https://github.com/786381743syq/FinancePdfTool";
+        private TabControl helpTabControl;
+
+        public HelpForm(int initialTabIndex = 0)
+        {
+            InitializeComponent();
+            if (initialTabIndex >= 0 && initialTabIndex < helpTabControl.TabPages.Count)
+            {
+                helpTabControl.SelectedIndex = initialTabIndex;
+            }
+        }
+
+        private void InitializeComponent()
+        {
+            this.Text = "财务专用 PDF 转换器 - 使用须知与功能指南";
+            this.Size = new Size(800, 720);
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+            this.BackColor = Color.White;
+            this.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular);
+
+            // 1. 顶部横幅
+            Panel pnlHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 72,
+                BackColor = Color.FromArgb(15, 23, 42)
+            };
+
+            Label lblTitle = new Label
+            {
+                Text = "📖 财务专用 PDF 转换器 · 使用须知与功能指南",
+                Font = new Font("Microsoft YaHei UI", 12.5F, FontStyle.Bold),
+                ForeColor = Color.White,
+                Location = new Point(20, 14),
+                AutoSize = true
+            };
+
+            Label lblSub = new Label
+            {
+                Text = "专为财务发票、银行单据、报销凭证与表格文档定制的高清互转与智能排版工具",
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular),
+                ForeColor = Color.FromArgb(148, 163, 184),
+                Location = new Point(22, 42),
+                AutoSize = true
+            };
+
+            pnlHeader.Controls.AddRange(new Control[] { lblTitle, lblSub });
+            this.Controls.Add(pnlHeader);
+
+            // 2. 底部栏 (GitHub 地址与关闭按钮)
+            Panel pnlFooter = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 64,
+                BackColor = Color.FromArgb(248, 250, 252)
+            };
+
+            Panel divFooter = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 1,
+                BackColor = Color.FromArgb(226, 232, 240)
+            };
+            pnlFooter.Controls.Add(divFooter);
+
+            Label lblGhTitle = new Label
+            {
+                Text = "项目开源主页 (GitHub)：",
+                Location = new Point(18, 12),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(100, 116, 139),
+                Font = new Font("Microsoft YaHei UI", 8.5F)
+            };
+
+            LinkLabel lnkGitHub = new LinkLabel
+            {
+                Text = GITHUB_URL,
+                Location = new Point(18, 33),
+                AutoSize = true,
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
+                LinkColor = Color.FromArgb(37, 99, 235),
+                Cursor = Cursors.Hand
+            };
+            lnkGitHub.LinkClicked += delegate {
+                try { System.Diagnostics.Process.Start(GITHUB_URL); } catch { }
+            };
+
+            Button btnCopyGh = new Button
+            {
+                Text = "📋 复制链接",
+                Location = new Point(460, 27),
+                Size = new Size(95, 26),
+                BackColor = Color.White,
+                ForeColor = Color.FromArgb(51, 65, 85),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft YaHei UI", 8.5F),
+                Cursor = Cursors.Hand
+            };
+            btnCopyGh.FlatAppearance.BorderColor = Color.FromArgb(203, 213, 225);
+            btnCopyGh.Click += delegate {
+                try
+                {
+                    Clipboard.SetText(GITHUB_URL);
+                    MessageBox.Show("GitHub 项目链接已复制到剪贴板！\n\n" + GITHUB_URL, "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("复制失败: " + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            };
+
+            Button btnClose = new Button
+            {
+                Text = "我知道了",
+                Location = new Point(665, 14),
+                Size = new Size(105, 36),
+                BackColor = Color.FromArgb(37, 99, 235),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            btnClose.FlatAppearance.BorderSize = 0;
+            btnClose.Click += delegate { this.Close(); };
+
+            pnlFooter.Controls.AddRange(new Control[] { lblGhTitle, lnkGitHub, btnCopyGh, btnClose });
+            this.Controls.Add(pnlFooter);
+
+            // 3. 中间 TabControl
+            helpTabControl = new TabControl
+            {
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+                ItemSize = new Size(230, 36),
+                SizeMode = TabSizeMode.Fixed
+            };
+
+            TabPage tab1 = new TabPage("📄 图片合成 PDF · 使用须知");
+            tab1.BackColor = Color.White;
+            tab1.Font = new Font("Microsoft YaHei UI", 9.5F);
+
+            Panel pnlTab1 = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 16, 12) };
+            TextBox txtTab1 = CreateHelpTextBox(GetTab1HelpText());
+            pnlTab1.Controls.Add(txtTab1);
+            tab1.Controls.Add(pnlTab1);
+
+            TabPage tab2 = new TabPage("🖼️ PDF 提取图片 · 使用须知");
+            tab2.BackColor = Color.White;
+            tab2.Font = new Font("Microsoft YaHei UI", 9.5F);
+
+            Panel pnlTab2 = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 16, 12) };
+            TextBox txtTab2 = CreateHelpTextBox(GetTab2HelpText());
+            pnlTab2.Controls.Add(txtTab2);
+            tab2.Controls.Add(pnlTab2);
+
+            helpTabControl.TabPages.AddRange(new TabPage[] { tab1, tab2 });
+            this.Controls.Add(helpTabControl);
+
+            helpTabControl.BringToFront();
+        }
+
+        private TextBox CreateHelpTextBox(string content)
+        {
+            return new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = Color.White,
+                ForeColor = Color.FromArgb(30, 41, 59),
+                BorderStyle = BorderStyle.None,
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular),
+                Text = content.Replace("\n", "\r\n")
+            };
+        }
+
+        private string GetTab1HelpText()
+        {
+            return 
+@"【一、图片导入与页面排序】
+1. 支持格式：PNG、JPG、JPEG、BMP、GIF、TIFF 等财务单据与常见图像格式。
+2. 批量导入：支持点击「添加图片」多选，或点击「添加文件夹」全量载入，更支持直接从桌面或文件夹拖拽文件到窗口。
+3. 智能自然排序：自动识别文件名中的连续数字编号（如 1、2、10...），彻底杜绝系统默认字典序导致的乱序错位。
+4. 顺序与朝向校准：点击列表中某一页，可通过「上移」、「下移」微调顺序；点击「旋转90°」可纠正手机拍摄横竖颠倒。
+
+【二、纸张版式与消除白边指南（核心重点）】
+1. ⭐【适合原图 (无白边)】（财务单据首选）：
+   • 生成的 PDF 页面尺寸 100% 匹配单据图片的实际长宽比，四周完全零白边！
+   • 适用场景：银行客户交易回单、电子发票、出租车票、小票据等无需固定 A4 纸张的数字化电子归档。
+2. 📄【标准 A4 / A3】（正式文件打印推荐）：
+   • 生成符合国际标准的 A4（210×297mm）或 A3 尺寸标准纸张，适合正式报送与装订打印。
+3. 🧭【智能感应 (自动横竖)】：
+   • 当单据是横向时（如银行电子回单、横版发票），系统会自动将 A4 纸张转为横向，并横向满幅放大居中铺满，避免在竖版 A4 纸上下留下大面积空白！
+4. 🔒【保持比例防拉伸】与【预留打印边距】：
+   • 始终按原图比例缩放，坚决防止财务公章与文字被压扁或拉长；
+   • 默认预留 30pt 安全边距，防止线下打印机物理边缘切字。
+
+【三、画质与压缩模式】
+1. ⭐【政务申报模式】（日常推荐）：
+   • 体积平均缩减约 70%，针对财务红章、发票代码号码与金额进行高保真边缘增强；
+   • 确保印章极清、票号锐利的同时极大压缩体积，轻松满足各类政务/税务/银行系统单文件上传大小限制（如 <10MB）。
+2. 💎【原画无损模式】：
+   • 100% 原始图像数据直接封装进 PDF 流，零重编码、零画质损失，适合重要审计凭证长期封存。
+
+【四、输出与快捷操作】
+• 转换完成自动弹出成功提示，支持一键点击「打开文件所在文件夹」直达归档目录。
+
+======================================================================
+🔗 开源项目主页 (GitHub)：https://github.com/786381743syq/FinancePdfTool
+欢迎 Star 支持与提交反馈！";
+        }
+
+        private string GetTab2HelpText()
+        {
+            return 
+@"【一、原生硬件加速与极速解析】
+1. Windows 原生底层：基于 Windows 10/11 系统内置 Direct2D / WinRT 原生硬件加速引擎，无需额外安装任何第三方组件，秒开秒转。
+2. 拖拽加载：支持直接将任意 PDF 文件拖拽进窗口即可瞬间载入。
+3. 页面管理与大图预览：左侧清晰展示每页尺寸、版式、规格，右侧提供高清纸张拟真大图与翻页预览。
+
+【二、导出格式选择】
+1. ⭐【PNG 高清无损】（财务票据推荐）：
+   • 绝对无损画质，发票防伪底纹、公章鲜红印泥微观细节、表格细线毫无模糊与压缩杂斑；
+   • 财务入账凭证留存、发票报销核对及二次打印的推荐格式。
+2. 📁【JPG 通用压缩】：
+   • 高保真通用压缩算法，文件体积小巧轻量；
+   • 适合用于微信、钉钉快速发送传输，或作为日常邮件附件查阅。
+
+【三、分辨率 (DPI) 精度选择】
+1. 🖨️【300 DPI 超清打印】（默认推荐）：
+   • 3x 超高采样率（A4 画幅约 2480×3508 像素），印章与小号字体极度锐利，满足专业印刷与法律存证标准。
+2. 💻【150 DPI 高清阅读】：
+   • 1.5x 高精采样（A4 画幅约 1240×1754 像素），在清晰度与文件大小之间取得最佳平衡，适合电脑屏幕浏览与归档。
+3. ⚡【96 DPI 标准轻量】：
+   • 1x 原生屏幕标准尺寸，体积最小，适合极速导出。
+
+【四、导出范围与灵活筛选】
+1. 导出全部页面：一键将整本 PDF 的全部页面批量转换为单张图片。
+2. 仅导出列表勾选页：通过左侧勾选框，配合「全选 / 全不选 / 反选」快捷功能，自由提取指定页码。
+3. 仅导出当前预览页：适合只想单独保存当前在右侧大图查看的那一页。
+
+【五、自动归档与一键查看】
+• 默认在 PDF 同级目录下自动建立「<文件名>_图片」专属文件夹，文件按「页码_01.png」自动规范命名；
+• 导出完毕后自动提示，并可一键打开输出文件夹。
+
+======================================================================
+🔗 开源项目主页 (GitHub)：https://github.com/786381743syq/FinancePdfTool
+欢迎 Star 支持与提交反馈！";
         }
     }
 }
