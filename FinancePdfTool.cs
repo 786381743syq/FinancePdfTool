@@ -3471,55 +3471,305 @@ namespace DynamicWinRt
 
     public class FallbackPdfEngine : IPdfEngine
     {
-        private List<Bitmap> extractedImages = new List<Bitmap>();
+        public class PageImageInfo
+        {
+            public string Name;
+            public int ObjId;
+            public Bitmap ImageBmp;
+            public double DrawX;
+            public double DrawY;
+            public double DrawW;
+            public double DrawH;
+            public bool HasPlacement;
+        }
+
+        public class FallbackPage
+        {
+            public int PageObjId;
+            public double WidthPt = 595.28;
+            public double HeightPt = 841.89;
+            public double MinX = 0;
+            public double MinY = 0;
+            public int Rotation = 0;
+            public List<PageImageInfo> Images = new List<PageImageInfo>();
+            public string FullContent = "";
+        }
+
+        public class PdfRawObject
+        {
+            public int Id;
+            public string DictText;
+            public byte[] StreamBytes;
+        }
+
+        private List<FallbackPage> pages = new List<FallbackPage>();
+        private List<Bitmap> fallbackRawBitmaps = new List<Bitmap>();
+
+        public int PageCount
+        {
+            get { return pages.Count; }
+        }
+
+        public SizeF GetPageSize(int pageIndex)
+        {
+            if (pageIndex >= 0 && pageIndex < pages.Count)
+            {
+                var p = pages[pageIndex];
+                if (p.Rotation == 90 || p.Rotation == 270)
+                    return new SizeF((float)p.HeightPt, (float)p.WidthPt);
+                return new SizeF((float)p.WidthPt, (float)p.HeightPt);
+            }
+            return SizeF.Empty;
+        }
 
         public bool Load(string pdfPath)
         {
             Close();
+            if (!File.Exists(pdfPath)) return false;
+
             try
             {
                 byte[] pdfBytes = File.ReadAllBytes(pdfPath);
-                int idx = 0;
-                while (idx < pdfBytes.Length - 10)
-                {
-                    // 查找 JPEG 文件头 0xFF, 0xD8, 0xFF
-                    if (pdfBytes[idx] == 0xFF && pdfBytes[idx + 1] == 0xD8 && pdfBytes[idx + 2] == 0xFF)
-                    {
-                        // 查找 JPEG 文件尾 0xFF, 0xD9
-                        int endIdx = -1;
-                        for (int j = idx + 3; j < pdfBytes.Length - 1; j++)
-                        {
-                            if (pdfBytes[j] == 0xFF && pdfBytes[j + 1] == 0xD9)
-                            {
-                                endIdx = j + 2;
-                                break;
-                            }
-                        }
+                var objs = ParseAllObjects(pdfBytes);
 
-                        if (endIdx > idx)
+                // 查找页面树 /Pages
+                var pageObjs = new List<PdfRawObject>();
+                foreach (var kvp in objs)
+                {
+                    if (kvp.Value.DictText.Contains("/Type /Pages") || kvp.Value.DictText.Contains("/Type/Pages"))
+                    {
+                        var mKids = Regex.Match(kvp.Value.DictText, @"/Kids\s*\[\s*([\d\sR]+)\s*\]");
+                        if (mKids.Success)
                         {
-                            try
+                            var refs = Regex.Matches(mKids.Groups[1].Value, @"(\d+)\s+0\s+R");
+                            foreach (Match r in refs)
                             {
-                                int len = endIdx - idx;
-                                byte[] imgData = new byte[len];
-                                Array.Copy(pdfBytes, idx, imgData, 0, len);
-                                using (MemoryStream ms = new MemoryStream(imgData))
-                                {
-                                    Bitmap b = new Bitmap(ms);
-                                    if (b.Width >= 100 && b.Height >= 100)
-                                    {
-                                        extractedImages.Add(new Bitmap(b));
-                                    }
-                                }
+                                int id = int.Parse(r.Groups[1].Value);
+                                if (objs.ContainsKey(id)) pageObjs.Add(objs[id]);
                             }
-                            catch { }
-                            idx = endIdx;
-                            continue;
                         }
                     }
-                    idx++;
                 }
-                return extractedImages.Count > 0;
+
+                if (pageObjs.Count == 0)
+                {
+                    foreach (var kvp in objs)
+                    {
+                        if (Regex.IsMatch(kvp.Value.DictText, @"/Type\s*/Page\b") && !Regex.IsMatch(kvp.Value.DictText, @"/Type\s*/Pages\b"))
+                        {
+                            pageObjs.Add(kvp.Value);
+                        }
+                    }
+                }
+
+                // 全局默认纸张尺寸 (默认 A4: 595.28 x 841.89)
+                double defaultW = 595.28, defaultH = 841.89;
+                foreach (var kvp in objs)
+                {
+                    var m = Regex.Match(kvp.Value.DictText, @"/MediaBox\s*\[\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s*\]");
+                    if (m.Success)
+                    {
+                        defaultW = double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture) - double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+                        defaultH = double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture) - double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+                        break;
+                    }
+                }
+
+                // 提取所有备用 raw JPEG
+                var allRawJpegs = ExtractRawJpegs(pdfBytes);
+
+                for (int i = 0; i < pageObjs.Count; i++)
+                {
+                    var pObj = pageObjs[i];
+                    var page = new FallbackPage { PageObjId = pObj.Id, WidthPt = defaultW, HeightPt = defaultH };
+
+                    // 1. 读取 MediaBox
+                    var mMbox = Regex.Match(pObj.DictText, @"/MediaBox\s*\[\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s*\]");
+                    if (mMbox.Success)
+                    {
+                        double x0 = double.Parse(mMbox.Groups[1].Value, CultureInfo.InvariantCulture);
+                        double y0 = double.Parse(mMbox.Groups[2].Value, CultureInfo.InvariantCulture);
+                        double x1 = double.Parse(mMbox.Groups[3].Value, CultureInfo.InvariantCulture);
+                        double y1 = double.Parse(mMbox.Groups[4].Value, CultureInfo.InvariantCulture);
+                        page.MinX = Math.Min(x0, x1);
+                        page.MinY = Math.Min(y0, y1);
+                        page.WidthPt = Math.Abs(x1 - x0);
+                        page.HeightPt = Math.Abs(y1 - y0);
+                    }
+
+                    // 2. 读取旋转角度
+                    var mRot = Regex.Match(pObj.DictText, @"/Rotate\s+(\d+)");
+                    if (mRot.Success) page.Rotation = int.Parse(mRot.Groups[1].Value);
+
+                    // 3. 收集本页关联的 XObject 图片
+                    var imgDict = new Dictionary<string, PageImageInfo>();
+                    var mXObjs = Regex.Matches(pObj.DictText, @"/([A-Za-z0-9_-]+)\s+(\d+)\s+0\s+R");
+                    foreach (Match x in mXObjs)
+                    {
+                        string xName = x.Groups[1].Value;
+                        int xId = int.Parse(x.Groups[2].Value);
+                        if (objs.ContainsKey(xId) && objs[xId].DictText.Contains("/Image"))
+                        {
+                            Bitmap bmp = DecodeImageObject(objs[xId]);
+                            if (bmp != null)
+                            {
+                                var info = new PageImageInfo { Name = xName, ObjId = xId, ImageBmp = bmp };
+                                imgDict[xName] = info;
+                                page.Images.Add(info);
+                            }
+                        }
+                    }
+
+                    // 4. 解析 Contents 流
+                    var mContents = Regex.Matches(pObj.DictText, @"/Contents\s*(?:\[\s*([\d\sR]+)\s*\]|(\d+)\s+0\s+R)");
+                    var contentObjIds = new List<int>();
+                    foreach (Match mc in mContents)
+                    {
+                        if (mc.Groups[1].Success)
+                        {
+                            var refs = Regex.Matches(mc.Groups[1].Value, @"(\d+)\s+0\s+R");
+                            foreach (Match r in refs) contentObjIds.Add(int.Parse(r.Groups[1].Value));
+                        }
+                        else if (mc.Groups[2].Success)
+                        {
+                            contentObjIds.Add(int.Parse(mc.Groups[2].Value));
+                        }
+                    }
+
+                    StringBuilder sbContent = new StringBuilder();
+                    foreach (int cId in contentObjIds)
+                    {
+                        if (objs.ContainsKey(cId) && objs[cId].StreamBytes != null)
+                        {
+                            byte[] cBytes = objs[cId].StreamBytes;
+                            if (objs[cId].DictText.Contains("/FlateDecode"))
+                            {
+                                byte[] decomp = DecompressZlib(cBytes);
+                                if (decomp != null) cBytes = decomp;
+                            }
+                            sbContent.Append(Encoding.ASCII.GetString(cBytes)).Append("\n");
+                        }
+                    }
+
+                    page.FullContent = sbContent.ToString();
+                    if (!string.IsNullOrEmpty(page.FullContent))
+                    {
+                        // 跟踪坐标变换矩阵 cm 及绘制算子 Do
+                        double[] ctm = new double[] { 1, 0, 0, 1, 0, 0 };
+                        var stateStack = new Stack<double[]>();
+                        var opRegex = new Regex(@"([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+cm|/([A-Za-z0-9_-]+)\s+Do\b|\b(q|Q)\b");
+                        var matches = opRegex.Matches(page.FullContent);
+
+                        foreach (Match m in matches)
+                        {
+                            if (m.Groups[8].Success)
+                            {
+                                if (m.Groups[8].Value == "q") stateStack.Push((double[])ctm.Clone());
+                                else if (m.Groups[8].Value == "Q" && stateStack.Count > 0) ctm = stateStack.Pop();
+                            }
+                            else if (m.Groups[1].Success)
+                            {
+                                double a = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+                                double b = double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+                                double c = double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+                                double d = double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
+                                double e = double.Parse(m.Groups[5].Value, CultureInfo.InvariantCulture);
+                                double f = double.Parse(m.Groups[6].Value, CultureInfo.InvariantCulture);
+                                ctm = Concat(new double[] { a, b, c, d, e, f }, ctm);
+                            }
+                            else if (m.Groups[7].Success)
+                            {
+                                string imgName = m.Groups[7].Value;
+                                if (imgDict.ContainsKey(imgName))
+                                {
+                                    var info = imgDict[imgName];
+                                    info.DrawW = Math.Sqrt(ctm[0] * ctm[0] + ctm[1] * ctm[1]);
+                                    info.DrawH = Math.Sqrt(ctm[2] * ctm[2] + ctm[3] * ctm[3]);
+                                    info.DrawX = ctm[4];
+                                    info.DrawY = ctm[5];
+                                    info.HasPlacement = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // 5. 若页面未显式关联 XObject，但全局提取到 JPEG 且页数刚好匹配：
+                    if (page.Images.Count == 0 && i < allRawJpegs.Count && pageObjs.Count == allRawJpegs.Count)
+                    {
+                        var info = new PageImageInfo
+                        {
+                            Name = "RawJpeg" + (i + 1),
+                            ObjId = -1,
+                            ImageBmp = new Bitmap(allRawJpegs[i]),
+                            HasPlacement = false
+                        };
+                        page.Images.Add(info);
+                    }
+
+                    // 6. 对未指定坐标的单据图片进行自适应排版居中
+                    foreach (var img in page.Images)
+                    {
+                        if (!img.HasPlacement && img.ImageBmp != null)
+                        {
+                            double ratioImg = (double)img.ImageBmp.Width / img.ImageBmp.Height;
+                            double ratioPage = page.WidthPt / page.HeightPt;
+                            if (Math.Abs(ratioImg - ratioPage) < 0.08)
+                            {
+                                img.DrawX = page.MinX;
+                                img.DrawY = page.MinY;
+                                img.DrawW = page.WidthPt;
+                                img.DrawH = page.HeightPt;
+                            }
+                            else
+                            {
+                                double margin = 30.0;
+                                double availW = Math.Max(10, page.WidthPt - margin * 2);
+                                double availH = Math.Max(10, page.HeightPt - margin * 2);
+                                double s = Math.Min(availW / img.ImageBmp.Width, availH / img.ImageBmp.Height);
+                                img.DrawW = img.ImageBmp.Width * s;
+                                img.DrawH = img.ImageBmp.Height * s;
+                                img.DrawX = page.MinX + (page.WidthPt - img.DrawW) / 2.0;
+                                img.DrawY = page.MinY + (page.HeightPt - img.DrawH) / 2.0;
+                            }
+                            img.HasPlacement = true;
+                        }
+                    }
+
+                    pages.Add(page);
+                }
+
+                // 释放临时备份 raw JPEGs
+                foreach (var b in allRawJpegs) b.Dispose();
+
+                // 7. 终极兜底：若页面对象解析为 0，直接使用文件原始 JPEG 流构建页面
+                if (pages.Count == 0)
+                {
+                    var backupJpegs = ExtractRawJpegs(pdfBytes);
+                    for (int j = 0; j < backupJpegs.Count; j++)
+                    {
+                        Bitmap b = backupJpegs[j];
+                        var p = new FallbackPage
+                        {
+                            PageObjId = -1,
+                            WidthPt = b.Width * 72.0 / 200.0,
+                            HeightPt = b.Height * 72.0 / 200.0
+                        };
+                        p.Images.Add(new PageImageInfo
+                        {
+                            Name = "Im" + (j + 1),
+                            ObjId = -1,
+                            ImageBmp = b,
+                            DrawX = 0,
+                            DrawY = 0,
+                            DrawW = p.WidthPt,
+                            DrawH = p.HeightPt,
+                            HasPlacement = true
+                        });
+                        pages.Add(p);
+                    }
+                }
+
+                return pages.Count > 0;
             }
             catch
             {
@@ -3527,54 +3777,334 @@ namespace DynamicWinRt
             }
         }
 
-        public int PageCount
-        {
-            get { return extractedImages.Count; }
-        }
-
-        public SizeF GetPageSize(int pageIndex)
-        {
-            if (pageIndex >= 0 && pageIndex < extractedImages.Count)
-                return new SizeF(extractedImages[pageIndex].Width, extractedImages[pageIndex].Height);
-            return SizeF.Empty;
-        }
-
         public Bitmap RenderPage(int pageIndex, float scale)
         {
-            if (pageIndex >= 0 && pageIndex < extractedImages.Count)
+            if (pageIndex < 0 || pageIndex >= pages.Count) return null;
+            var page = pages[pageIndex];
+
+            // 按照页面原始纸张物理尺寸渲染完整画幅
+            int canvasW = Math.Max(1, (int)Math.Round(page.WidthPt * scale));
+            int canvasH = Math.Max(1, (int)Math.Round(page.HeightPt * scale));
+
+            Bitmap bmp = new Bitmap(canvasW, canvasH, PixelFormat.Format32bppRgb);
+            using (Graphics g = Graphics.FromImage(bmp))
             {
-                Bitmap src = extractedImages[pageIndex];
-                if (Math.Abs(scale - 1.0f) < 0.05f)
+                g.Clear(Color.White);
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.SmoothingMode = SmoothingMode.HighQuality;
+
+                // 绘制页面包含的单据/图片
+                foreach (var img in page.Images)
                 {
-                    return new Bitmap(src);
+                    if (img.ImageBmp == null) continue;
+                    float destX = (float)((img.DrawX - page.MinX) * scale);
+                    float destY = (float)((page.HeightPt - (img.DrawY + img.DrawH - page.MinY)) * scale);
+                    float destW = (float)(img.DrawW * scale);
+                    float destH = (float)(img.DrawH * scale);
+
+                    g.DrawImage(img.ImageBmp, destX, destY, destW, destH);
                 }
 
-                int targetW = Math.Max(1, (int)Math.Round(src.Width * scale));
-                int targetH = Math.Max(1, (int)Math.Round(src.Height * scale));
-                Bitmap res = new Bitmap(targetW, targetH, PixelFormat.Format32bppArgb);
-                using (Graphics g = Graphics.FromImage(res))
+                // 若本页无位图且有文字流，辅助渲染文字
+                if (page.Images.Count == 0 && !string.IsNullOrEmpty(page.FullContent))
                 {
-                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    g.SmoothingMode = SmoothingMode.HighQuality;
-                    g.DrawImage(src, 0, 0, targetW, targetH);
+                    var textMatches = Regex.Matches(page.FullContent, @"\(([^\)]*)\)\s*Tj");
+                    if (textMatches.Count > 0)
+                    {
+                        using (Font font = new Font("Microsoft YaHei UI", Math.Max(8f, 9f * scale / 4.1667f)))
+                        using (Brush brush = new SolidBrush(Color.FromArgb(30, 41, 59)))
+                        {
+                            float curY = 40 * scale;
+                            foreach (Match tm in textMatches)
+                            {
+                                string t = tm.Groups[1].Value;
+                                if (!string.IsNullOrWhiteSpace(t))
+                                {
+                                    g.DrawString(t, font, brush, 30 * scale, curY);
+                                    curY += 15 * scale;
+                                }
+                            }
+                        }
+                    }
                 }
-                return res;
             }
-            return null;
+
+            if (page.Rotation == 90) bmp.RotateFlip(RotateFlipType.Rotate90FlipNone);
+            else if (page.Rotation == 180) bmp.RotateFlip(RotateFlipType.Rotate180FlipNone);
+            else if (page.Rotation == 270) bmp.RotateFlip(RotateFlipType.Rotate270FlipNone);
+
+            return bmp;
         }
 
         public void Close()
         {
-            foreach (var b in extractedImages)
+            foreach (var p in pages)
             {
-                b.Dispose();
+                foreach (var img in p.Images)
+                {
+                    if (img.ImageBmp != null)
+                    {
+                        try { img.ImageBmp.Dispose(); } catch { }
+                    }
+                }
             }
-            extractedImages.Clear();
+            pages.Clear();
+
+            foreach (var b in fallbackRawBitmaps)
+            {
+                try { b.Dispose(); } catch { }
+            }
+            fallbackRawBitmaps.Clear();
         }
 
         public void Dispose()
         {
             Close();
+        }
+
+        private static List<Bitmap> ExtractRawJpegs(byte[] pdfBytes)
+        {
+            var list = new List<Bitmap>();
+            int idx = 0;
+            while (idx < pdfBytes.Length - 10)
+            {
+                if (pdfBytes[idx] == 0xFF && pdfBytes[idx + 1] == 0xD8 && pdfBytes[idx + 2] == 0xFF)
+                {
+                    int endIdx = -1;
+                    for (int j = idx + 3; j < pdfBytes.Length - 1; j++)
+                    {
+                        if (pdfBytes[j] == 0xFF && pdfBytes[j + 1] == 0xD9)
+                        {
+                            endIdx = j + 2;
+                            break;
+                        }
+                    }
+                    if (endIdx > idx)
+                    {
+                        try
+                        {
+                            int len = endIdx - idx;
+                            byte[] imgData = new byte[len];
+                            Array.Copy(pdfBytes, idx, imgData, 0, len);
+                            using (MemoryStream ms = new MemoryStream(imgData))
+                            {
+                                Bitmap b = new Bitmap(ms);
+                                if (b.Width >= 100 && b.Height >= 100)
+                                {
+                                    list.Add(new Bitmap(b));
+                                }
+                            }
+                        }
+                        catch { }
+                        idx = endIdx;
+                        continue;
+                    }
+                }
+                idx++;
+            }
+            return list;
+        }
+
+        public static byte[] DecompressZlib(byte[] input)
+        {
+            if (input == null || input.Length < 6) return null;
+            using (var msInput = new MemoryStream(input, 2, input.Length - 6))
+            using (var deflate = new DeflateStream(msInput, CompressionMode.Decompress))
+            using (var msOutput = new MemoryStream())
+            {
+                try { deflate.CopyTo(msOutput); return msOutput.ToArray(); }
+                catch { return null; }
+            }
+        }
+
+        private static Dictionary<int, PdfRawObject> ParseAllObjects(byte[] pdfBytes)
+        {
+            var objects = new Dictionary<int, PdfRawObject>();
+            string raw = Encoding.ASCII.GetString(pdfBytes);
+
+            var objRegex = new Regex(@"(\d+)\s+0\s+obj\b");
+            var matches = objRegex.Matches(raw);
+
+            for (int i = 0; i < matches.Count; i++)
+            {
+                int id = int.Parse(matches[i].Groups[1].Value);
+                int startPos = matches[i].Index;
+                int nextStart = (i + 1 < matches.Count) ? matches[i + 1].Index : raw.Length;
+                int endObj = raw.IndexOf("endobj", startPos);
+                if (endObj < 0 || endObj > nextStart) endObj = nextStart;
+
+                int objLen = endObj - startPos;
+                int streamPos = raw.IndexOf("stream", startPos);
+                byte[] streamData = null;
+                string dictText = "";
+
+                if (streamPos >= 0 && streamPos < endObj)
+                {
+                    int streamStart = streamPos + 6;
+                    if (streamStart < pdfBytes.Length && pdfBytes[streamStart] == '\r') streamStart++;
+                    if (streamStart < pdfBytes.Length && pdfBytes[streamStart] == '\n') streamStart++;
+
+                    int endStream = raw.IndexOf("endstream", streamStart);
+                    if (endStream >= 0 && endStream <= endObj)
+                    {
+                        int streamLen = endStream - streamStart;
+                        streamData = new byte[streamLen];
+                        Array.Copy(pdfBytes, streamStart, streamData, 0, streamLen);
+                    }
+                    dictText = raw.Substring(startPos, streamPos - startPos);
+                }
+                else
+                {
+                    dictText = raw.Substring(startPos, objLen);
+                }
+
+                objects[id] = new PdfRawObject { Id = id, DictText = dictText, StreamBytes = streamData };
+            }
+
+            // 处理 ObjStm 对象流
+            var objStmList = new List<PdfRawObject>();
+            foreach (var kvp in objects)
+            {
+                if (kvp.Value.DictText.Contains("/ObjStm") && kvp.Value.StreamBytes != null)
+                {
+                    objStmList.Add(kvp.Value);
+                }
+            }
+
+            foreach (var objStm in objStmList)
+            {
+                byte[] decomp = DecompressZlib(objStm.StreamBytes);
+                if (decomp == null) continue;
+
+                string decompText = Encoding.ASCII.GetString(decomp);
+                var mN = Regex.Match(objStm.DictText, @"/N\s+(\d+)");
+                var mFirst = Regex.Match(objStm.DictText, @"/First\s+(\d+)");
+                if (!mN.Success || !mFirst.Success) continue;
+
+                int n = int.Parse(mN.Groups[1].Value);
+                int first = int.Parse(mFirst.Groups[1].Value);
+
+                string headerPart = decompText.Substring(0, Math.Min(first, decompText.Length));
+                var tokens = headerPart.Trim().Split(new char[] { ' ', '\r', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+
+                var subObjs = new List<KeyValuePair<int, int>>();
+                for (int t = 0; t + 1 < tokens.Length; t += 2)
+                {
+                    int subId = int.Parse(tokens[t]);
+                    int subOffset = int.Parse(tokens[t + 1]);
+                    subObjs.Add(new KeyValuePair<int, int>(subId, first + subOffset));
+                }
+
+                for (int s = 0; s < subObjs.Count; s++)
+                {
+                    int subId = subObjs[s].Key;
+                    int start = subObjs[s].Value;
+                    int end = (s + 1 < subObjs.Count) ? subObjs[s + 1].Value : decompText.Length;
+                    string subText = decompText.Substring(start, end - start).Trim();
+
+                    objects[subId] = new PdfRawObject { Id = subId, DictText = subText, StreamBytes = null };
+                }
+            }
+
+            return objects;
+        }
+
+        private static Bitmap DecodeImageObject(PdfRawObject obj)
+        {
+            if (obj == null || obj.StreamBytes == null || obj.StreamBytes.Length == 0) return null;
+
+            if (obj.DictText.Contains("/DCTDecode") || (obj.StreamBytes.Length > 3 && obj.StreamBytes[0] == 0xFF && obj.StreamBytes[1] == 0xD8))
+            {
+                try
+                {
+                    using (var ms = new MemoryStream(obj.StreamBytes))
+                    {
+                        return new Bitmap(ms);
+                    }
+                }
+                catch { }
+            }
+
+            if (obj.DictText.Contains("/FlateDecode"))
+            {
+                byte[] decomp = DecompressZlib(obj.StreamBytes);
+                if (decomp != null)
+                {
+                    var mW = Regex.Match(obj.DictText, @"/Width\s+(\d+)");
+                    var mH = Regex.Match(obj.DictText, @"/Height\s+(\d+)");
+                    var mBpc = Regex.Match(obj.DictText, @"/BitsPerComponent\s+(\d+)");
+                    if (mW.Success && mH.Success)
+                    {
+                        int w = int.Parse(mW.Groups[1].Value);
+                        int h = int.Parse(mH.Groups[1].Value);
+                        int bpc = mBpc.Success ? int.Parse(mBpc.Groups[1].Value) : 8;
+
+                        if (bpc == 8 && decomp.Length >= w * h * 3)
+                        {
+                            Bitmap bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
+                            BitmapData bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+                            try
+                            {
+                                int stride = bd.Stride;
+                                byte[] row = new byte[stride];
+                                for (int y = 0; y < h; y++)
+                                {
+                                    int srcOffset = y * w * 3;
+                                    for (int x = 0; x < w; x++)
+                                    {
+                                        row[x * 3] = decomp[srcOffset + x * 3 + 2];     // B
+                                        row[x * 3 + 1] = decomp[srcOffset + x * 3 + 1]; // G
+                                        row[x * 3 + 2] = decomp[srcOffset + x * 3];     // R
+                                    }
+                                    System.Runtime.InteropServices.Marshal.Copy(row, 0, new IntPtr(bd.Scan0.ToInt64() + y * stride), stride);
+                                }
+                            }
+                            finally { bmp.UnlockBits(bd); }
+                            return bmp;
+                        }
+                        else if (bpc == 8 && decomp.Length >= w * h)
+                        {
+                            Bitmap bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
+                            BitmapData bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+                            try
+                            {
+                                int stride = bd.Stride;
+                                byte[] row = new byte[stride];
+                                for (int y = 0; y < h; y++)
+                                {
+                                    int srcOffset = y * w;
+                                    for (int x = 0; x < w; x++)
+                                    {
+                                        byte g = decomp[srcOffset + x];
+                                        row[x * 3] = g;
+                                        row[x * 3 + 1] = g;
+                                        row[x * 3 + 2] = g;
+                                    }
+                                    System.Runtime.InteropServices.Marshal.Copy(row, 0, new IntPtr(bd.Scan0.ToInt64() + y * stride), stride);
+                                }
+                            }
+                            finally { bmp.UnlockBits(bd); }
+                            return bmp;
+                        }
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static double[] Concat(double[] m, double[] ctm)
+        {
+            return new double[]
+            {
+                m[0]*ctm[0] + m[1]*ctm[2],
+                m[0]*ctm[1] + m[1]*ctm[3],
+                m[2]*ctm[0] + m[3]*ctm[2],
+                m[2]*ctm[1] + m[3]*ctm[3],
+                m[4]*ctm[0] + m[5]*ctm[2] + ctm[4],
+                m[4]*ctm[1] + m[5]*ctm[3] + ctm[5]
+            };
         }
     }
 
