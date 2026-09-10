@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -4463,24 +4463,65 @@ namespace DynamicWinRt
             bool isBalanceSheet = false;
             double headerY = -1;
 
+            // 1. Check for Balance Sheet table header (Y > 600)
             foreach (var c in chunks)
             {
-                if (c.Text.Contains("资产") && c.X < 150)
+                if (c.Y > 600)
                 {
-                    foreach (var c2 in chunks)
+                    if (c.Text.Contains("负债及所有者权益") || c.Text.Contains("负债和所有者权益") ||
+                        (c.Text.Contains("所有者权益") && c.X > 250))
                     {
-                        if (c2.Text.Contains("负债") && Math.Abs(c2.Y - c.Y) < 5)
-                        {
-                            isBalanceSheet = true;
-                            headerY = c.Y;
-                            break;
-                        }
+                        isBalanceSheet = true;
+                        headerY = c.Y;
+                        break;
                     }
-                    if (isBalanceSheet) break;
                 }
-                else if (c.Text == "项目" && headerY < 0)
+            }
+
+            if (!isBalanceSheet)
+            {
+                // Secondary check for Balance Sheet: "期末余额" at X < 250 along with a "负债" chunk on the same line
+                foreach (var c in chunks)
                 {
-                    headerY = c.Y;
+                    if (c.Y > 600 && c.Text.Contains("期末余额") && c.X < 250)
+                    {
+                        foreach (var c2 in chunks)
+                        {
+                            if (Math.Abs(c2.Y - c.Y) < 4 && c2.Text.Contains("负债") && !c2.Text.Contains("流动"))
+                            {
+                                isBalanceSheet = true;
+                                headerY = c.Y;
+                                break;
+                            }
+                        }
+                        if (isBalanceSheet) break;
+                    }
+                }
+            }
+
+            // 2. If not balance sheet or headerY still not found, look for "项目" at Y > 600
+            if (headerY < 0)
+            {
+                foreach (var c in chunks)
+                {
+                    if (c.Y > 600 && c.Text == "项目" && c.X < 250)
+                    {
+                        headerY = c.Y;
+                        break;
+                    }
+                }
+            }
+
+            // 3. Fallback for other standard headers
+            if (headerY < 0)
+            {
+                foreach (var c in chunks)
+                {
+                    if (c.Y > 600 && (c.Text.Contains("本年累计") || c.Text.Contains("期末余额") || c.Text.Contains("行次")))
+                    {
+                        headerY = c.Y;
+                        break;
+                    }
                 }
             }
 
@@ -4729,7 +4770,7 @@ namespace DynamicWinRt
                 "    <border><left style=\"thin\"><color rgb=\"FFD9D9D9\"/></left><right style=\"thin\"><color rgb=\"FFD9D9D9\"/></right><top style=\"thin\"><color rgb=\"FFB0C4DE\"/></top><bottom style=\"double\"><color rgb=\"FF1F4E78\"/></bottom></border>\r\n" +
                 "  </borders>\r\n" +
                 "  <cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\r\n" +
-                "  <cellXfs count=\"18\">\r\n" +
+                "  <cellXfs count=\"24\">\r\n" +
                 "    <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
                 "    <xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"2\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
                 "    <xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
@@ -4748,6 +4789,12 @@ namespace DynamicWinRt
                 "    <xf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
                 "    <xf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
                 "    <xf numFmtId=\"0\" fontId=\"5\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"4\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"164\" fontId=\"4\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"4\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"4\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"164\" fontId=\"4\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"4\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
                 "  </cellXfs>\r\n" +
                 "</styleSheet>");
 
@@ -4901,6 +4948,8 @@ namespace DynamicWinRt
                 }
 
                 // Table Data Rows
+                bool is8Col = (sheet.Headers.Count >= 8 || maxCols >= 8);
+
                 for (int rIdx = 0; rIdx < sheet.Rows.Count; rIdx++)
                 {
                     var row = sheet.Rows[rIdx];
@@ -4908,22 +4957,39 @@ namespace DynamicWinRt
 
                     // Check if summary row
                     bool isGrandTotal = false;
-                    bool isSubtotal = false;
-                    string rowTextCombined = "";
-                    foreach (var cell in row) rowTextCombined += cell.Text + " ";
+                    bool leftIsSubtotal = false;
+                    bool rightIsSubtotal = false;
 
-                    if (rowTextCombined.Contains("资产总计") || rowTextCombined.Contains("负债和所有者权益（或股东权益）总计") ||
-                        rowTextCombined.Contains("四、净利润") || rowTextCombined.Contains("五、期末现金余额"))
+                    string c0 = (row.Count > 0) ? row[0].Text.Trim() : "";
+                    string c4 = (row.Count > 4) ? row[4].Text.Trim() : "";
+
+                    if (is8Col)
                     {
-                        isGrandTotal = true;
+                        if (c0.Contains("资产总计") || c4.Contains("负债和所有者权益") || c4.Contains("负债及所有者权益") || c4.Contains("总计"))
+                        {
+                            isGrandTotal = true;
+                        }
+                        else
+                        {
+                            leftIsSubtotal = c0.Contains("合计") || c0.Contains("小计") || c0.EndsWith("：") || c0.EndsWith(":");
+                            rightIsSubtotal = c4.Contains("合计") || c4.Contains("小计") || c4.EndsWith("：") || c4.EndsWith(":");
+                        }
                     }
-                    else if (rowTextCombined.Contains("合计") || rowTextCombined.Contains("二、营业利润") ||
-                             rowTextCombined.Contains("三、利润总额") || rowTextCombined.Contains("现金净增加额"))
+                    else
                     {
-                        isSubtotal = true;
+                        if (c0.Contains("净利润") || c0.Contains("期末现金余额"))
+                        {
+                            isGrandTotal = true;
+                        }
+                        else
+                        {
+                            leftIsSubtotal = c0.Contains("合计") || c0.Contains("小计") ||
+                                             c0.Contains("营业利润") || c0.Contains("利润总额") ||
+                                             c0.Contains("现金净增加额") || c0.EndsWith("：") || c0.EndsWith(":");
+                        }
                     }
 
-                    int ht = (isGrandTotal || isSubtotal) ? 22 : 21;
+                    int ht = isGrandTotal ? 24 : ((leftIsSubtotal || rightIsSubtotal) ? 22 : 21);
                     sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"{1}\" customHeight=\"1\">", rowNum, ht));
 
                     for (int cIdx = 0; cIdx < row.Count; cIdx++)
@@ -4933,14 +4999,23 @@ namespace DynamicWinRt
                         string hName = (cIdx < sheet.Headers.Count) ? sheet.Headers[cIdx] : "";
                         bool isLineCol = (hName == "行次");
 
+                        bool cellIsSubtotal = is8Col ? ((cIdx < 4) ? leftIsSubtotal : rightIsSubtotal) : leftIsSubtotal;
+
                         int style;
                         if (isGrandTotal)
                         {
                             style = cell.IsNumeric ? 11 : (isLineCol ? 12 : 10);
                         }
-                        else if (isSubtotal)
+                        else if (cellIsSubtotal)
                         {
-                            style = cell.IsNumeric ? 8 : (isLineCol ? 9 : 7);
+                            if (isEvenRow)
+                            {
+                                style = cell.IsNumeric ? 22 : (isLineCol ? 23 : 21);
+                            }
+                            else
+                            {
+                                style = cell.IsNumeric ? 19 : (isLineCol ? 20 : 18);
+                            }
                         }
                         else if (isEvenRow)
                         {
