@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -120,6 +120,7 @@ namespace FinancePdfApp
         private ProgressBar progressBarExcel;
         private Label lblExcelStatus;
         private DataGridView dgvPdfExcel;
+        private Label lblDgvHeader;
         private BackgroundWorker workerPdfToExcel;
 
         // ================== Tab 4：Excel 转成 PDF 相关控件 ==================
@@ -2363,7 +2364,7 @@ namespace FinancePdfApp
                 BorderStyle = BorderStyle.FixedSingle
             };
 
-            Label lblDgvHeader = new Label
+            lblDgvHeader = new Label
             {
                 Text = "📋 数据实时表格预览 (所见即所得)",
                 Location = new Point(12, 10),
@@ -2478,6 +2479,18 @@ namespace FinancePdfApp
             dgvPdfExcel.Rows.Clear();
 
             if (sheet == null || sheet.Headers.Count == 0) return;
+
+            if (lblDgvHeader != null)
+            {
+                if (sheet.HeaderInfo != null && !string.IsNullOrEmpty(sheet.HeaderInfo.Title))
+                {
+                    lblDgvHeader.Text = "📋 " + sheet.HeaderInfo.Title + (!string.IsNullOrEmpty(sheet.HeaderInfo.CompanyName) ? ("  [" + sheet.HeaderInfo.CompanyName + "]") : "");
+                }
+                else
+                {
+                    lblDgvHeader.Text = "📋 " + sheet.Title + " (所见即所得表格预览)";
+                }
+            }
 
             for (int c = 0; c < sheet.Headers.Count; c++)
             {
@@ -4100,9 +4113,21 @@ namespace DynamicWinRt
         public double NumericValue = 0;
     }
 
+    public class ReportHeaderInfo
+    {
+        public string Title = "";
+        public string FormCode = "";
+        public string TaxId = "";
+        public string TaxPeriod = "";
+        public string CompanyName = "";
+        public string FilingDate = "";
+        public string MonetaryUnit = "单位：元";
+    }
+
     public class TableSheet
     {
         public string Title = "工作表";
+        public ReportHeaderInfo HeaderInfo = new ReportHeaderInfo();
         public List<string> MetaLines = new List<string>();
         public List<string> Headers = new List<string>();
         public List<List<TableCell>> Rows = new List<List<TableCell>>();
@@ -4130,24 +4155,52 @@ namespace DynamicWinRt
             }
         }
 
-        public static Dictionary<int, string> ParseCMap(string cmapText)
+        public static Dictionary<int, string> ParseCMap(string cmapContent)
+    {
+        var map = new Dictionary<int, string>();
+        if (string.IsNullOrEmpty(cmapContent)) return map;
+
+        var bfcMatches = Regex.Matches(cmapContent, @"beginbfchar([\s\S]*?)endbfchar");
+        foreach (Match m in bfcMatches)
         {
-            var map = new Dictionary<int, string>();
-            var matches = Regex.Matches(cmapText, @"<([0-9A-Fa-f]{4})>\s*<([0-9A-Fa-f]{4,})>");
-            foreach (Match m in matches)
+            var hexTokens = Regex.Matches(m.Groups[1].Value, @"<([0-9A-Fa-f]+)>");
+            for (int i = 0; i + 1 < hexTokens.Count; i += 2)
             {
-                int src = Convert.ToInt32(m.Groups[1].Value, 16);
-                string hexDst = m.Groups[2].Value;
+                int code = Convert.ToInt32(hexTokens[i].Groups[1].Value, 16);
+                string uHex = hexTokens[i + 1].Groups[1].Value;
                 StringBuilder sb = new StringBuilder();
-                for (int i = 0; i < hexDst.Length; i += 4)
+                for (int u = 0; u + 4 <= uHex.Length; u += 4)
                 {
-                    int code = Convert.ToInt32(hexDst.Substring(i, 4), 16);
-                    sb.Append((char)code);
+                    int uVal = Convert.ToInt32(uHex.Substring(u, 4), 16);
+                    sb.Append((char)uVal);
                 }
-                map[src] = sb.ToString();
+                if (sb.Length == 0 && uHex.Length > 0)
+                {
+                    int uVal = Convert.ToInt32(uHex, 16);
+                    sb.Append((char)uVal);
+                }
+                map[code] = sb.ToString();
             }
-            return map;
         }
+
+        var bfrMatches = Regex.Matches(cmapContent, @"beginbfrange([\s\S]*?)endbfrange");
+        foreach (Match m in bfrMatches)
+        {
+            var hexTokens = Regex.Matches(m.Groups[1].Value, @"<([0-9A-Fa-f]+)>");
+            for (int i = 0; i + 2 < hexTokens.Count; i += 3)
+            {
+                int start = Convert.ToInt32(hexTokens[i].Groups[1].Value, 16);
+                int end = Convert.ToInt32(hexTokens[i + 1].Groups[1].Value, 16);
+                int targetStart = Convert.ToInt32(hexTokens[i + 2].Groups[1].Value, 16);
+                for (int c = start; c <= end; c++)
+                {
+                    int uVal = targetStart + (c - start);
+                    map[c] = ((char)uVal).ToString();
+                }
+            }
+        }
+        return map;
+    }
 
         static double[] Concat(double[] m, double[] ctm)
         {
@@ -4277,7 +4330,7 @@ namespace DynamicWinRt
             for (int p = 0; p < pageCount; p++)
             {
                 int contentObjId = int.Parse(contentRefs[p].Groups[1].Value);
-                int cmapObjId = (p < toUnicodeRefs.Count) ? int.Parse(toUnicodeRefs[p].Groups[1].Value) : -1;
+                int cmapObjId = (p < toUnicodeRefs.Count) ? int.Parse(toUnicodeRefs[p].Groups[1].Value) : (toUnicodeRefs.Count > 0 ? int.Parse(toUnicodeRefs[0].Groups[1].Value) : -1);
 
                 Dictionary<int, string> cmap = null;
                 if (cmapObjId > 0)
@@ -4297,6 +4350,98 @@ namespace DynamicWinRt
             return sheets;
         }
 
+        public static ReportHeaderInfo ExtractHeaderInfo(List<TextChunk> chunks, double headerY)
+    {
+        var info = new ReportHeaderInfo();
+        if (headerY < 0) headerY = 740;
+
+        var metaChunks = new List<TextChunk>();
+        foreach (var c in chunks)
+        {
+            if (c.Y >= headerY - 2)
+            {
+                metaChunks.Add(c);
+            }
+        }
+
+        metaChunks.Sort((a, b) => b.Y.CompareTo(a.Y));
+        var metaRows = new List<List<TextChunk>>();
+        List<TextChunk> curMeta = null;
+        foreach (var c in metaChunks)
+        {
+            if (curMeta == null || Math.Abs(curMeta[0].Y - c.Y) > 5.0)
+            {
+                curMeta = new List<TextChunk>();
+                metaRows.Add(curMeta);
+            }
+            curMeta.Add(c);
+        }
+
+        foreach (var mr in metaRows)
+        {
+            mr.Sort((a, b) => {
+                if (Math.Abs(a.X - b.X) > 5.0) return a.X.CompareTo(b.X);
+                return a.StreamIndex.CompareTo(b.StreamIndex);
+            });
+            StringBuilder sbLine = new StringBuilder();
+            foreach (var ch in mr)
+            {
+                string text = ch.Text;
+                if (sbLine.Length > 0)
+                {
+                    char lastCh = sbLine[sbLine.Length - 1];
+                    char firstCh = text.Length > 0 ? text[0] : ' ';
+                    bool isCjk = (lastCh >= 0x4e00 && lastCh <= 0x9fa5) || (firstCh >= 0x4e00 && firstCh <= 0x9fa5) ||
+                                 lastCh == '（' || firstCh == '）' || lastCh == '：' || firstCh == '：' ||
+                                 lastCh == '_' || firstCh == '_';
+                    if (!isCjk && lastCh != ' ' && firstCh != ' ') sbLine.Append(" ");
+                }
+                sbLine.Append(text);
+            }
+            string line = sbLine.ToString().Trim();
+            double y = mr[0].Y;
+
+            if (y > 810 || line.Contains("表_年报") || line.Contains("（适用执行小企业"))
+            {
+                info.Title = line;
+            }
+            else if (line.Contains("会小企") || line.EndsWith("表"))
+            {
+                info.FormCode = line;
+            }
+            else if (line.Contains("纳税人识别号") || line.Contains("税款所属期"))
+            {
+                var leftParts = new StringBuilder();
+                var rightParts = new StringBuilder();
+                foreach (var ch in mr)
+                {
+                    if (ch.X < 260) leftParts.Append(ch.Text);
+                    else rightParts.Append(ch.Text);
+                }
+                info.TaxId = leftParts.ToString().Trim();
+                info.TaxPeriod = rightParts.ToString().Trim();
+            }
+            else if (line.Contains("编制单位") || line.Contains("报送日期") || line.Contains("单位："))
+            {
+                var leftParts = new StringBuilder();
+                var midParts = new StringBuilder();
+                var rightParts = new StringBuilder();
+                foreach (var ch in mr)
+                {
+                    if (ch.X < 260) leftParts.Append(ch.Text);
+                    else if (ch.X < 450) midParts.Append(ch.Text);
+                    else rightParts.Append(ch.Text);
+                }
+                info.CompanyName = leftParts.ToString().Trim();
+                info.FilingDate = midParts.ToString().Trim();
+                info.MonetaryUnit = rightParts.ToString().Trim();
+            }
+        }
+
+        if (string.IsNullOrEmpty(info.MonetaryUnit)) info.MonetaryUnit = "单位：元";
+        return info;
+    }
+
         public static TableSheet ParsePageIntoSheet(List<TextChunk> chunks, int pageIndex)
         {
             var sheet = new TableSheet();
@@ -4314,8 +4459,6 @@ namespace DynamicWinRt
                     if (c.Text.Contains("现金流量表")) { detectedTitle = "现金流量表"; break; }
                 }
             }
-            if (string.IsNullOrEmpty(detectedTitle)) detectedTitle = "第" + pageIndex + "页报表";
-            sheet.Title = detectedTitle;
 
             bool isBalanceSheet = false;
             double headerY = -1;
@@ -4340,6 +4483,22 @@ namespace DynamicWinRt
                     headerY = c.Y;
                 }
             }
+
+            if (headerY > 0)
+            {
+                sheet.HeaderInfo = ExtractHeaderInfo(chunks, headerY);
+            }
+
+            if (detectedTitle == "资产负债表") sheet.Title = "资产负债表";
+            else if (detectedTitle == "利润表") sheet.Title = "利润表";
+            else if (detectedTitle == "现金流量表") sheet.Title = "现金流量表";
+            else if (sheet.HeaderInfo != null && !string.IsNullOrEmpty(sheet.HeaderInfo.Title))
+            {
+                string t = sheet.HeaderInfo.Title;
+                if (t.Length > 28) t = t.Substring(0, 28);
+                sheet.Title = t;
+            }
+            else sheet.Title = "第" + pageIndex + "页报表";
 
             double[] colBounds;
             if (isBalanceSheet)
@@ -4467,6 +4626,31 @@ namespace DynamicWinRt
             return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
         }
 
+        static string GetColName(int col)
+        {
+            string res = "";
+            while (col > 0)
+            {
+                col--;
+                res = (char)('A' + (col % 26)) + res;
+                col /= 26;
+            }
+            return res;
+        }
+
+        static double MeasureDisplayLen(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            double len = 0;
+            foreach (char ch in text)
+            {
+                if (ch >= 0x4e00 && ch <= 0x9fa5) len += 2.1;
+                else if (ch >= 0xff00 || ch == '（' || ch == '）' || ch == '：' || ch == '、') len += 2.0;
+                else len += 1.1;
+            }
+            return len;
+        }
+
         public static byte[] GenerateXlsx(List<TableSheet> sheets)
         {
             var files = new Dictionary<string, byte[]>();
@@ -4516,30 +4700,54 @@ namespace DynamicWinRt
             sbWb.AppendLine("</workbook>");
             files["xl/workbook.xml"] = Encoding.UTF8.GetBytes(sbWb.ToString());
 
+            // Professional Financial Style Sheet
             files["xl/styles.xml"] = Encoding.UTF8.GetBytes(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n" +
                 "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\r\n" +
                 "  <numFmts count=\"1\">\r\n" +
                 "    <numFmt numFmtId=\"164\" formatCode=\"#,##0.00;[Red]-#,##0.00;0.00\"/>\r\n" +
                 "  </numFmts>\r\n" +
-                "  <fonts count=\"2\">\r\n" +
-                "    <font><name val=\"Microsoft YaHei\"/><sz val=\"10\"/></font>\r\n" +
-                "    <font><b/><name val=\"Microsoft YaHei\"/><sz val=\"11\"/></font>\r\n" +
+                "  <fonts count=\"6\">\r\n" +
+                "    <font><name val=\"Microsoft YaHei\"/><sz val=\"10\"/><color rgb=\"FF333333\"/></font>\r\n" +
+                "    <font><b/><name val=\"Microsoft YaHei\"/><sz val=\"10.5\"/><color rgb=\"FFFFFFFF\"/></font>\r\n" +
+                "    <font><b/><name val=\"Microsoft YaHei\"/><sz val=\"15\"/><color rgb=\"FF1F4E78\"/></font>\r\n" +
+                "    <font><name val=\"Microsoft YaHei\"/><sz val=\"9.5\"/><color rgb=\"FF595959\"/></font>\r\n" +
+                "    <font><b/><name val=\"Microsoft YaHei\"/><sz val=\"10\"/><color rgb=\"FF1F4E78\"/></font>\r\n" +
+                "    <font><b/><name val=\"Microsoft YaHei\"/><sz val=\"9.5\"/><color rgb=\"FF333333\"/></font>\r\n" +
                 "  </fonts>\r\n" +
-                "  <fills count=\"3\">\r\n" +
+                "  <fills count=\"5\">\r\n" +
                 "    <fill><patternFill patternType=\"none\"/></fill>\r\n" +
                 "    <fill><patternFill patternType=\"gray125\"/></fill>\r\n" +
-                "    <fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF0F4F8\"/></patternFill></fill>\r\n" +
+                "    <fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF2E5B82\"/></patternFill></fill>\r\n" +
+                "    <fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF7FAFC\"/></patternFill></fill>\r\n" +
+                "    <fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFE8EEF5\"/></patternFill></fill>\r\n" +
                 "  </fills>\r\n" +
-                "  <borders count=\"2\">\r\n" +
+                "  <borders count=\"4\">\r\n" +
                 "    <border><left/><right/><top/><bottom/></border>\r\n" +
-                "    <border><left style=\"thin\"><color rgb=\"FFD0D0D0\"/></left><right style=\"thin\"><color rgb=\"FFD0D0D0\"/></right><top style=\"thin\"><color rgb=\"FFD0D0D0\"/></top><bottom style=\"thin\"><color rgb=\"FFD0D0D0\"/></bottom></border>\r\n" +
+                "    <border><left style=\"thin\"><color rgb=\"FFD9D9D9\"/></left><right style=\"thin\"><color rgb=\"FFD9D9D9\"/></right><top style=\"thin\"><color rgb=\"FFD9D9D9\"/></top><bottom style=\"thin\"><color rgb=\"FFD9D9D9\"/></bottom></border>\r\n" +
+                "    <border><left style=\"thin\"><color rgb=\"FF203764\"/></left><right style=\"thin\"><color rgb=\"FF203764\"/></right><top style=\"thin\"><color rgb=\"FF203764\"/></top><bottom style=\"medium\"><color rgb=\"FF203764\"/></bottom></border>\r\n" +
+                "    <border><left style=\"thin\"><color rgb=\"FFD9D9D9\"/></left><right style=\"thin\"><color rgb=\"FFD9D9D9\"/></right><top style=\"thin\"><color rgb=\"FFB0C4DE\"/></top><bottom style=\"double\"><color rgb=\"FF1F4E78\"/></bottom></border>\r\n" +
                 "  </borders>\r\n" +
                 "  <cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\r\n" +
-                "  <cellXfs count=\"3\">\r\n" +
-                "    <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyBorder=\"1\"/>\r\n" +
-                "    <xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>\r\n" +
-                "    <xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyBorder=\"1\"/>\r\n" +
+                "  <cellXfs count=\"18\">\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"2\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"0\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"164\" fontId=\"0\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"0\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"4\" fillId=\"4\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"164\" fontId=\"4\" fillId=\"4\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"4\" fillId=\"4\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"4\" fillId=\"4\" borderId=\"3\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"164\" fontId=\"4\" fillId=\"4\" borderId=\"3\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"4\" fillId=\"4\" borderId=\"3\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"2\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"5\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>\r\n" +
                 "  </cellXfs>\r\n" +
                 "</styleSheet>");
 
@@ -4552,9 +4760,8 @@ namespace DynamicWinRt
                 sbWs.AppendLine("  <sheetViews>");
                 sbWs.AppendLine("    <sheetView workbookViewId=\"0\"/>");
                 sbWs.AppendLine("  </sheetViews>");
-                sbWs.AppendLine("  <sheetFormatPr defaultRowHeight=\"20\"/>");
+                sbWs.AppendLine("  <sheetFormatPr defaultRowHeight=\"21\"/>");
 
-                // 计算智能列宽 (自适应内容长度 + 中文字符加权 + 财务金额防截断)
                 int maxCols = sheet.Headers.Count;
                 for (int r = 0; r < sheet.Rows.Count; r++)
                 {
@@ -4592,7 +4799,6 @@ namespace DynamicWinRt
                         string headerText = (c < sheet.Headers.Count) ? sheet.Headers[c] : "";
                         if (headerText.Contains("余额") || headerText.Contains("金额"))
                         {
-                            // 金额列保底宽度16.5，确保大额千分位数值绝对不会在Excel中显示为 ########
                             finalWidth = Math.Max(16.5, maxDisplayLen + 3.0);
                         }
                         else if (headerText == "行次")
@@ -4604,18 +4810,87 @@ namespace DynamicWinRt
                             finalWidth = Math.Max(18.0, maxDisplayLen + 3.0);
                         }
                         finalWidth = Math.Round(Math.Min(finalWidth, 50.0), 1);
-
                         sbWs.AppendLine(string.Format("    <col min=\"{0}\" max=\"{0}\" width=\"{1}\" customWidth=\"1\"/>", c + 1, finalWidth.ToString("F1", CultureInfo.InvariantCulture)));
                     }
                     sbWs.AppendLine("  </cols>");
                 }
 
                 sbWs.AppendLine("  <sheetData>");
-
                 int rowNum = 1;
+                var merges = new List<string>();
+
+                var hInfo = sheet.HeaderInfo;
+                bool hasHeader = hInfo != null && !string.IsNullOrEmpty(hInfo.Title);
+
+                if (hasHeader)
+                {
+                    // Row 1: Title
+                    string lastCol = GetColName(maxCols);
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"34\" customHeight=\"1\">", rowNum));
+                    sbWs.AppendLine(string.Format("      <c r=\"A{0}\" s=\"13\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.Title)));
+                    sbWs.AppendLine("    </row>");
+                    merges.Add(string.Format("A{0}:{1}{0}", rowNum, lastCol));
+                    rowNum++;
+
+                    // Row 2: FormCode
+                    if (!string.IsNullOrEmpty(hInfo.FormCode))
+                    {
+                        sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"18\" customHeight=\"1\">", rowNum));
+                        sbWs.AppendLine(string.Format("      <c r=\"A{0}\" s=\"14\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.FormCode)));
+                        sbWs.AppendLine("    </row>");
+                        rowNum++;
+                    }
+
+                    // Row 3: TaxId and TaxPeriod
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"20\" customHeight=\"1\">", rowNum));
+                    sbWs.AppendLine(string.Format("      <c r=\"A{0}\" s=\"14\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.TaxId)));
+                    if (maxCols >= 8)
+                    {
+                        merges.Add(string.Format("A{0}:D{0}", rowNum));
+                        sbWs.AppendLine(string.Format("      <c r=\"E{0}\" s=\"15\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.TaxPeriod)));
+                        merges.Add(string.Format("E{0}:H{0}", rowNum));
+                    }
+                    else if (maxCols >= 4)
+                    {
+                        merges.Add(string.Format("A{0}:B{0}", rowNum));
+                        sbWs.AppendLine(string.Format("      <c r=\"C{0}\" s=\"15\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.TaxPeriod)));
+                        merges.Add(string.Format("C{0}:D{0}", rowNum));
+                    }
+                    else
+                    {
+                        sbWs.AppendLine(string.Format("      <c r=\"B{0}\" s=\"15\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.TaxPeriod)));
+                    }
+                    sbWs.AppendLine("    </row>");
+                    rowNum++;
+
+                    // Row 4: CompanyName, FilingDate, MonetaryUnit
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"20\" customHeight=\"1\">", rowNum));
+                    sbWs.AppendLine(string.Format("      <c r=\"A{0}\" s=\"14\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.CompanyName)));
+                    if (maxCols >= 8)
+                    {
+                        merges.Add(string.Format("A{0}:D{0}", rowNum));
+                        sbWs.AppendLine(string.Format("      <c r=\"E{0}\" s=\"16\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.FilingDate)));
+                        merges.Add(string.Format("E{0}:G{0}", rowNum));
+                        sbWs.AppendLine(string.Format("      <c r=\"H{0}\" s=\"15\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.MonetaryUnit)));
+                    }
+                    else if (maxCols >= 4)
+                    {
+                        merges.Add(string.Format("A{0}:B{0}", rowNum));
+                        sbWs.AppendLine(string.Format("      <c r=\"C{0}\" s=\"16\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.FilingDate)));
+                        sbWs.AppendLine(string.Format("      <c r=\"D{0}\" s=\"15\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.MonetaryUnit)));
+                    }
+                    else
+                    {
+                        sbWs.AppendLine(string.Format("      <c r=\"B{0}\" s=\"15\" t=\"inlineStr\"><is><t>{1}</t></is></c>", rowNum, EscapeXml(hInfo.MonetaryUnit)));
+                    }
+                    sbWs.AppendLine("    </row>");
+                    rowNum++;
+                }
+
+                // Table Headers (Row 5 or rowNum)
                 if (sheet.Headers.Count > 0)
                 {
-                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"24\" customHeight=\"1\">", rowNum));
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"26\" customHeight=\"1\">", rowNum));
                     for (int c = 0; c < sheet.Headers.Count; c++)
                     {
                         string colLetter = GetColName(c + 1);
@@ -4625,15 +4900,56 @@ namespace DynamicWinRt
                     rowNum++;
                 }
 
+                // Table Data Rows
                 for (int rIdx = 0; rIdx < sheet.Rows.Count; rIdx++)
                 {
                     var row = sheet.Rows[rIdx];
-                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"20\" customHeight=\"1\">", rowNum));
+                    bool isEvenRow = (rIdx % 2 == 1);
+
+                    // Check if summary row
+                    bool isGrandTotal = false;
+                    bool isSubtotal = false;
+                    string rowTextCombined = "";
+                    foreach (var cell in row) rowTextCombined += cell.Text + " ";
+
+                    if (rowTextCombined.Contains("资产总计") || rowTextCombined.Contains("负债和所有者权益（或股东权益）总计") ||
+                        rowTextCombined.Contains("四、净利润") || rowTextCombined.Contains("五、期末现金余额"))
+                    {
+                        isGrandTotal = true;
+                    }
+                    else if (rowTextCombined.Contains("合计") || rowTextCombined.Contains("二、营业利润") ||
+                             rowTextCombined.Contains("三、利润总额") || rowTextCombined.Contains("现金净增加额"))
+                    {
+                        isSubtotal = true;
+                    }
+
+                    int ht = (isGrandTotal || isSubtotal) ? 22 : 21;
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"{1}\" customHeight=\"1\">", rowNum, ht));
+
                     for (int cIdx = 0; cIdx < row.Count; cIdx++)
                     {
                         string colLetter = GetColName(cIdx + 1);
                         var cell = row[cIdx];
-                        int style = cell.IsNumeric ? 2 : 0;
+                        string hName = (cIdx < sheet.Headers.Count) ? sheet.Headers[cIdx] : "";
+                        bool isLineCol = (hName == "行次");
+
+                        int style;
+                        if (isGrandTotal)
+                        {
+                            style = cell.IsNumeric ? 11 : (isLineCol ? 12 : 10);
+                        }
+                        else if (isSubtotal)
+                        {
+                            style = cell.IsNumeric ? 8 : (isLineCol ? 9 : 7);
+                        }
+                        else if (isEvenRow)
+                        {
+                            style = cell.IsNumeric ? 5 : (isLineCol ? 6 : 4);
+                        }
+                        else
+                        {
+                            style = cell.IsNumeric ? 2 : (isLineCol ? 3 : 0);
+                        }
 
                         if (cell.IsNumeric)
                         {
@@ -4649,36 +4965,22 @@ namespace DynamicWinRt
                 }
 
                 sbWs.AppendLine("  </sheetData>");
+
+                if (merges.Count > 0)
+                {
+                    sbWs.AppendLine(string.Format("  <mergeCells count=\"{0}\">", merges.Count));
+                    foreach (var m in merges)
+                    {
+                        sbWs.AppendLine(string.Format("    <mergeCell ref=\"{0}\"/>", m));
+                    }
+                    sbWs.AppendLine("  </mergeCells>");
+                }
+
                 sbWs.AppendLine("</worksheet>");
                 files[string.Format("xl/worksheets/sheet{0}.xml", sIdx + 1)] = Encoding.UTF8.GetBytes(sbWs.ToString());
             }
 
             return SimpleZipWriter.CreateZip(files);
-        }
-
-        static double MeasureDisplayLen(string text)
-        {
-            if (string.IsNullOrEmpty(text)) return 0;
-            double len = 0;
-            foreach (char ch in text)
-            {
-                if (ch >= 0x4e00 && ch <= 0x9fa5) len += 2.1;
-                else if (ch >= 0xff00 || ch == '（' || ch == '）' || ch == '：' || ch == '、') len += 2.0;
-                else len += 1.1;
-            }
-            return len;
-        }
-
-        static string GetColName(int col)
-        {
-            string res = "";
-            while (col > 0)
-            {
-                col--;
-                res = (char)('A' + (col % 26)) + res;
-                col /= 26;
-            }
-            return res;
         }
     }
 
@@ -4858,8 +5160,24 @@ namespace DynamicWinRt
             var bitmaps = new List<Bitmap>();
             if (sheet.Rows.Count == 0) return bitmaps;
 
+            int tableHeaderRowIdx = -1;
+            for (int r = 0; r < Math.Min(6, sheet.Rows.Count); r++)
+            {
+                var row = sheet.Rows[r];
+                for (int c = 0; c < row.Count; c++)
+                {
+                    if (row[c] == "项目" || row[c] == "资产" || row[c] == "负债及所有者权益" || row[c] == "行次")
+                    {
+                        tableHeaderRowIdx = r;
+                        break;
+                    }
+                }
+                if (tableHeaderRowIdx >= 0) break;
+            }
+
+            int dataStartRow = (tableHeaderRowIdx >= 0) ? tableHeaderRowIdx : 0;
             int maxCols = 0;
-            foreach (var r in sheet.Rows) maxCols = Math.Max(maxCols, r.Count);
+            for (int r = dataStartRow; r < sheet.Rows.Count; r++) maxCols = Math.Max(maxCols, sheet.Rows[r].Count);
             if (maxCols == 0) return bitmaps;
 
             bool isLandscape;
@@ -4870,18 +5188,19 @@ namespace DynamicWinRt
             int pageWidth = isLandscape ? 2338 : 1654;
             int pageHeight = isLandscape ? 1654 : 2338;
             int marginX = 80;
-            int marginTop = 100;
+            int marginTop = (tableHeaderRowIdx > 0) ? 140 : 100;
             int marginBottom = 90;
             int printableWidth = pageWidth - marginX * 2;
 
             float[] colWeights = new float[maxCols];
             for (int c = 0; c < maxCols; c++) colWeights[c] = 5f;
 
-            foreach (var r in sheet.Rows)
+            for (int r = dataStartRow; r < sheet.Rows.Count; r++)
             {
-                for (int c = 0; c < r.Count; c++)
+                var row = sheet.Rows[r];
+                for (int c = 0; c < row.Count; c++)
                 {
-                    string text = r[c];
+                    string text = row[c];
                     float len = 0;
                     foreach (char ch in text)
                     {
@@ -4904,19 +5223,21 @@ namespace DynamicWinRt
 
             int rowHeight = 44;
             int headerHeight = 52;
-            int rowsPerPage = (pageHeight - marginTop - marginBottom - 120) / rowHeight;
+            int printableTableHeight = pageHeight - marginTop - marginBottom - 120;
+            int tableDataRowCount = sheet.Rows.Count - dataStartRow;
+            int rowsPerPage = printableTableHeight / rowHeight;
             if (rowsPerPage < 10) rowsPerPage = 10;
 
-            int totalPages = (int)Math.Ceiling((double)sheet.Rows.Count / rowsPerPage);
+            int totalPages = (int)Math.Ceiling((double)tableDataRowCount / rowsPerPage);
+            if (totalPages == 0) totalPages = 1;
 
-            // Theme colors
-            Color hdrBgColor = Color.FromArgb(240, 244, 250);
-            Color zebraColor = Color.FromArgb(248, 250, 254);
-            Color gridColor = Color.FromArgb(210, 215, 225);
-            Color thickColor = Color.FromArgb(70, 95, 140);
-            Color titleColor = Color.FromArgb(20, 35, 60);
+            Color hdrBgColor = Color.FromArgb(46, 91, 130);
+            Color zebraColor = Color.FromArgb(247, 250, 252);
+            Color gridColor = Color.FromArgb(216, 224, 232);
+            Color thickColor = Color.FromArgb(31, 78, 120);
+            Color titleColor = Color.FromArgb(31, 78, 120);
 
-            if (themeMode == 1) // Black & white
+            if (themeMode == 1)
             {
                 hdrBgColor = Color.FromArgb(235, 235, 235);
                 zebraColor = Color.White;
@@ -4924,7 +5245,7 @@ namespace DynamicWinRt
                 thickColor = Color.Black;
                 titleColor = Color.Black;
             }
-            else if (themeMode == 2) // Modern Gray
+            else if (themeMode == 2)
             {
                 hdrBgColor = Color.FromArgb(243, 244, 246);
                 zebraColor = Color.FromArgb(249, 250, 251);
@@ -4948,30 +5269,61 @@ namespace DynamicWinRt
                     using (Font fontFooter = new Font("Microsoft YaHei", 8.5f, FontStyle.Regular))
                     using (Brush brushTitle = new SolidBrush(titleColor))
                     using (Brush brushText = new SolidBrush(Color.FromArgb(40, 40, 40)))
+                    using (Brush brushHdrText = new SolidBrush(themeMode == 0 ? Color.White : Color.FromArgb(30, 30, 30)))
                     using (Brush brushFooter = new SolidBrush(Color.FromArgb(140, 140, 140)))
                     using (Pen penGrid = new Pen(gridColor, 1.2f))
                     using (Pen penThick = new Pen(thickColor, 2f))
                     using (Brush brushHdrBg = new SolidBrush(hdrBgColor))
                     using (Brush brushZebra = new SolidBrush(zebraColor))
                     {
-                        string title = sheet.Name;
-                        g.DrawString(title, fontTitle, brushTitle, marginX, 40);
+                        string mainTitle = sheet.Name;
+                        if (tableHeaderRowIdx > 0 && sheet.Rows[0].Count > 0 && !string.IsNullOrEmpty(sheet.Rows[0][0]))
+                        {
+                            mainTitle = sheet.Rows[0][0];
+                        }
+
+                        var sfTitle = new StringFormat { Alignment = StringAlignment.Center };
+                        g.DrawString(mainTitle, fontTitle, brushTitle, pageWidth / 2, 35, sfTitle);
+
+                        if (tableHeaderRowIdx > 0)
+                        {
+                            float metaY = 75;
+                            for (int m = 1; m < tableHeaderRowIdx; m++)
+                            {
+                                var mRow = sheet.Rows[m];
+                                string leftText = (mRow.Count > 0) ? mRow[0] : "";
+                                string rightText = (mRow.Count > 1) ? mRow[mRow.Count - 1] : "";
+                                string midText = (mRow.Count > 2) ? mRow[mRow.Count / 2] : "";
+
+                                if (!string.IsNullOrEmpty(leftText))
+                                    g.DrawString(leftText, fontBody, brushFooter, marginX, metaY);
+                                if (!string.IsNullOrEmpty(midText) && midText != leftText && midText != rightText)
+                                    g.DrawString(midText, fontBody, brushFooter, pageWidth / 2, metaY, sfTitle);
+                                if (!string.IsNullOrEmpty(rightText) && rightText != leftText)
+                                {
+                                    var sfRight = new StringFormat { Alignment = StringAlignment.Far };
+                                    g.DrawString(rightText, fontBody, brushFooter, pageWidth - marginX, metaY, sfRight);
+                                }
+                                metaY += 24;
+                            }
+                        }
 
                         float curY = marginTop;
-                        int startRow = p * rowsPerPage;
-                        int endRow = Math.Min(sheet.Rows.Count, (p + 1) * rowsPerPage);
+                        int startDataIdx = p * rowsPerPage;
+                        int endDataIdx = Math.Min(tableDataRowCount, (p + 1) * rowsPerPage);
 
-                        for (int rIdx = startRow; rIdx < endRow; rIdx++)
+                        for (int i = startDataIdx; i < endDataIdx; i++)
                         {
-                            var row = sheet.Rows[rIdx];
-                            bool isHdr = (rIdx == 0);
+                            int actualRowIdx = dataStartRow + i;
+                            var row = sheet.Rows[actualRowIdx];
+                            bool isHdr = (actualRowIdx == dataStartRow && tableHeaderRowIdx >= 0);
                             float rH = isHdr ? headerHeight : rowHeight;
 
                             if (isHdr)
                             {
                                 g.FillRectangle(brushHdrBg, marginX, curY, printableWidth, rH);
                             }
-                            else if (rIdx % 2 == 1)
+                            else if (i % 2 == 1)
                             {
                                 g.FillRectangle(brushZebra, marginX, curY, printableWidth, rH);
                             }
@@ -4981,19 +5333,20 @@ namespace DynamicWinRt
                             {
                                 string text = (c < row.Count) ? row[c] : "";
                                 Font f = isHdr ? fontHeader : fontBody;
+                                Brush bText = isHdr ? brushHdrText : brushText;
 
                                 double dummy;
                                 bool isNum = double.TryParse(text.Replace(",", ""), out dummy);
 
                                 var sf = new StringFormat
                                 {
-                                    Alignment = isNum ? StringAlignment.Far : StringAlignment.Near,
+                                    Alignment = isHdr ? StringAlignment.Center : (isNum ? StringAlignment.Far : StringAlignment.Near),
                                     LineAlignment = StringAlignment.Center,
                                     Trimming = StringTrimming.EllipsisCharacter
                                 };
 
                                 var cellRect = new RectangleF(curX + 6, curY + 2, colWidths[c] - 12, rH - 4);
-                                g.DrawString(text, f, brushText, cellRect, sf);
+                                g.DrawString(text, f, bText, cellRect, sf);
 
                                 g.DrawLine(penGrid, curX, curY, curX, curY + rH);
                                 curX += colWidths[c];
