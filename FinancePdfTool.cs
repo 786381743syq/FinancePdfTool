@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -10,6 +10,9 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Globalization;
 using System.Threading;
+using System.IO.Compression;
+using System.Text.RegularExpressions;
+using System.Drawing.Text;
 
 using System.Reflection;
 using System.CodeDom.Compiler;
@@ -102,6 +105,45 @@ namespace FinancePdfApp
         private Label lblPdfStatus;
         private BackgroundWorker workerPdfToImg;
 
+        // ================== Tab 3：PDF 提取 Excel 相关控件 ==================
+        private TabPage tabPagePdfToExcel;
+        private string currentPdfForExcelPath = null;
+        private List<TableSheet> currentExtractedSheets = new List<TableSheet>();
+        private Label lblPdfExcelFileInfo;
+        private ComboBox cmbExcelSheets;
+        private RadioButton rbExportXlsx;
+        private RadioButton rbExportCsv;
+        private CheckBox chkFinancialFormat;
+        private TextBox txtExcelOutputDir;
+        private Button btnBrowseExcelOutputDir;
+        private Button btnExportExcel;
+        private ProgressBar progressBarExcel;
+        private Label lblExcelStatus;
+        private DataGridView dgvPdfExcel;
+        private BackgroundWorker workerPdfToExcel;
+
+        // ================== Tab 4：Excel 转成 PDF 相关控件 ==================
+        private TabPage tabPageExcelToPdf;
+        private string currentExcelPath = null;
+        private List<ExcelSheetData> currentLoadedExcelSheets = new List<ExcelSheetData>();
+        private List<Bitmap> currentExcelPdfPageBitmaps = new List<Bitmap>();
+        private int currentExcelPdfPreviewPageIndex = 0;
+        private Label lblExcelPdfFileInfo;
+        private ComboBox cmbExcelToPdfSheets;
+        private ComboBox cmbExcelPdfOrientation;
+        private ComboBox cmbExcelPdfTheme;
+        private CheckBox chkExcelPdfPageNum;
+        private TextBox txtExcelPdfOutputDir;
+        private Button btnBrowseExcelPdfOutputDir;
+        private Button btnExportExcelPdf;
+        private ProgressBar progressBarExcelPdf;
+        private Label lblExcelPdfStatus;
+        private PictureBox previewBoxExcelPdf;
+        private Label lblExcelPdfPageInfo;
+        private Button btnPrevExcelPdfPage;
+        private Button btnNextExcelPdfPage;
+        private BackgroundWorker workerExcelToPdf;
+
         public MainForm(string[] args)
         {
             InitializeComponent();
@@ -150,12 +192,40 @@ namespace FinancePdfApp
                 Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular)
             };
 
+            tabPagePdfToExcel = new TabPage("📊 PDF 提取 Excel")
+            {
+                BackColor = Color.FromArgb(245, 247, 250),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular)
+            };
+
+            tabPageExcelToPdf = new TabPage("📑 Excel 转成 PDF")
+            {
+                BackColor = Color.FromArgb(245, 247, 250),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular)
+            };
+
             BuildTabImgToPdf();
             BuildTabPdfToImg();
+            BuildTabPdfToExcel();
+            BuildTabExcelToPdf();
 
             mainTabControl.TabPages.Add(tabPageImgToPdf);
             mainTabControl.TabPages.Add(tabPagePdfToImg);
+            mainTabControl.TabPages.Add(tabPagePdfToExcel);
+            mainTabControl.TabPages.Add(tabPageExcelToPdf);
+            mainTabControl.ItemSize = new Size(220, 38);
             this.Controls.Add(mainTabControl);
+
+            // 后台任务工作者 (Tab 3 & 4)
+            workerPdfToExcel = new BackgroundWorker { WorkerReportsProgress = true };
+            workerPdfToExcel.DoWork += WorkerPdfToExcel_DoWork;
+            workerPdfToExcel.ProgressChanged += WorkerPdfToExcel_ProgressChanged;
+            workerPdfToExcel.RunWorkerCompleted += WorkerPdfToExcel_RunWorkerCompleted;
+
+            workerExcelToPdf = new BackgroundWorker { WorkerReportsProgress = true };
+            workerExcelToPdf.DoWork += WorkerExcelToPdf_DoWork;
+            workerExcelToPdf.ProgressChanged += WorkerExcelToPdf_ProgressChanged;
+            workerExcelToPdf.RunWorkerCompleted += WorkerExcelToPdf_RunWorkerCompleted;
 
             // 后台任务工作者
             workerImgToPdf = new BackgroundWorker { WorkerReportsProgress = true };
@@ -1361,19 +1431,33 @@ namespace FinancePdfApp
             if (paths == null || paths.Length == 0) return;
 
             string firstPdf = null;
+            string firstExcel = null;
             foreach (string p in paths)
             {
-                if (File.Exists(p) && p.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+                if (File.Exists(p))
                 {
-                    firstPdf = p;
-                    break;
+                    string ext = Path.GetExtension(p).ToLowerInvariant();
+                    if (ext == ".pdf" && firstPdf == null) firstPdf = p;
+                    if ((ext == ".xlsx" || ext == ".xls" || ext == ".csv") && firstExcel == null) firstExcel = p;
                 }
             }
 
-            if (firstPdf != null)
+            if (firstExcel != null)
             {
-                mainTabControl.SelectedTab = tabPagePdfToImg;
-                LoadPdfDocument(firstPdf);
+                mainTabControl.SelectedTab = tabPageExcelToPdf;
+                LoadExcelDocument(firstExcel);
+            }
+            else if (firstPdf != null)
+            {
+                if (mainTabControl.SelectedTab == tabPagePdfToExcel)
+                {
+                    LoadPdfForExcel(firstPdf);
+                }
+                else
+                {
+                    mainTabControl.SelectedTab = tabPagePdfToImg;
+                    LoadPdfDocument(firstPdf);
+                }
             }
             else
             {
@@ -2092,6 +2176,934 @@ namespace FinancePdfApp
 
         #endregion
 
+        #region ================== Tab 3：PDF 提取 Excel UI 与逻辑 ==================
+
+        private void BuildTabPdfToExcel()
+        {
+            // 1. 顶部工具栏
+            Panel topBar = new Panel
+            {
+                Location = new Point(0, 0),
+                Size = new Size(1012, 54),
+                BackColor = Color.White
+            };
+
+            Button btnOpenPdf = CreateButton("📂 选择 PDF 文件...", 140, 34, Color.FromArgb(37, 99, 235), Color.White);
+            btnOpenPdf.Location = new Point(15, 10);
+            btnOpenPdf.Click += delegate {
+                using (OpenFileDialog ofd = new OpenFileDialog())
+                {
+                    ofd.Title = "选择需要提取表格的 PDF 文件";
+                    ofd.Filter = "PDF 电子文档 (*.pdf)|*.pdf|所有文件 (*.*)|*.*";
+                    if (ofd.ShowDialog() == DialogResult.OK)
+                    {
+                        LoadPdfForExcel(ofd.FileName);
+                    }
+                }
+            };
+
+            lblPdfExcelFileInfo = new Label
+            {
+                Text = "请点击左侧按钮或直接拖拽 PDF 文件（支持年报/季报财报、申报表、对账单等）至此窗口",
+                Location = new Point(165, 17),
+                Size = new Size(720, 22),
+                ForeColor = Color.FromArgb(71, 85, 105),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular),
+                AutoEllipsis = true
+            };
+
+            Button btnHelpTab3 = CreateButton("💡 使用须知", 100, 34, Color.FromArgb(243, 244, 246), Color.FromArgb(79, 70, 229));
+            btnHelpTab3.Location = new Point(895, 10);
+            btnHelpTab3.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+            btnHelpTab3.Click += delegate { ShowHelpDialog(2); };
+
+            topBar.Controls.AddRange(new Control[] { btnOpenPdf, lblPdfExcelFileInfo, btnHelpTab3 });
+            tabPagePdfToExcel.Controls.Add(topBar);
+
+            // 2. 左侧控制面板
+            Panel pnlLeft = new Panel
+            {
+                Location = new Point(12, 64),
+                Size = new Size(420, 626),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            // 2.1 报表识别与工作表选择
+            GroupBox grpSheets = new GroupBox
+            {
+                Text = "报表识别与工作表选择",
+                Location = new Point(14, 12),
+                Size = new Size(390, 105),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            Label lblSheetSelect = new Label
+            {
+                Text = "选择预览/导出的工作表：",
+                Location = new Point(15, 25),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(51, 65, 85)
+            };
+
+            cmbExcelSheets = new ComboBox
+            {
+                Location = new Point(18, 52),
+                Size = new Size(355, 26),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cmbExcelSheets.Items.Add("尚未载入任何 PDF 报表");
+            cmbExcelSheets.SelectedIndex = 0;
+            cmbExcelSheets.SelectedIndexChanged += CmbExcelSheets_SelectedIndexChanged;
+
+            grpSheets.Controls.AddRange(new Control[] { lblSheetSelect, cmbExcelSheets });
+            pnlLeft.Controls.Add(grpSheets);
+
+            // 2.2 导出格式与数据规则
+            GroupBox grpRules = new GroupBox
+            {
+                Text = "导出格式与数据规则",
+                Location = new Point(14, 126),
+                Size = new Size(390, 135),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            rbExportXlsx = new RadioButton
+            {
+                Text = "Excel 工作簿 (*.xlsx) - 现代化 OpenXML 推荐",
+                Location = new Point(18, 25),
+                AutoSize = true,
+                Checked = true,
+                ForeColor = Color.FromArgb(15, 23, 42)
+            };
+
+            rbExportCsv = new RadioButton
+            {
+                Text = "CSV 表格 (*.csv) - 兼容通用系统",
+                Location = new Point(18, 55),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(15, 23, 42)
+            };
+
+            chkFinancialFormat = new CheckBox
+            {
+                Text = "金额写入真实数值 (保留千分位，直接支持SUM求和)",
+                Location = new Point(18, 90),
+                AutoSize = true,
+                Checked = true,
+                ForeColor = Color.FromArgb(79, 70, 229),
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold)
+            };
+
+            grpRules.Controls.AddRange(new Control[] { rbExportXlsx, rbExportCsv, chkFinancialFormat });
+            pnlLeft.Controls.Add(grpRules);
+
+            // 2.3 输出路径与生成
+            GroupBox grpOut = new GroupBox
+            {
+                Text = "导出保存路径",
+                Location = new Point(14, 270),
+                Size = new Size(390, 160),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            Label lblPath = new Label
+            {
+                Text = "保存路径：",
+                Location = new Point(15, 25),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(51, 65, 85)
+            };
+
+            txtExcelOutputDir = new TextBox
+            {
+                Location = new Point(18, 48),
+                Size = new Size(275, 25),
+                ReadOnly = false
+            };
+
+            btnBrowseExcelOutputDir = CreateButton("浏览...", 70, 27, Color.FromArgb(241, 245, 249), Color.FromArgb(51, 65, 85));
+            btnBrowseExcelOutputDir.Location = new Point(300, 47);
+            btnBrowseExcelOutputDir.Click += BtnBrowseExcelOutputDir_Click;
+
+            btnExportExcel = CreateButton("⚡ 立即导出 Excel 表格", 355, 42, Color.FromArgb(16, 185, 129), Color.White);
+            btnExportExcel.Location = new Point(18, 92);
+            btnExportExcel.Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold);
+            btnExportExcel.Click += BtnExportExcel_Click;
+
+            grpOut.Controls.AddRange(new Control[] { lblPath, txtExcelOutputDir, btnBrowseExcelOutputDir, btnExportExcel });
+            pnlLeft.Controls.Add(grpOut);
+
+            // 进度条与状态
+            progressBarExcel = new ProgressBar
+            {
+                Location = new Point(14, 550),
+                Size = new Size(390, 14),
+                Style = ProgressBarStyle.Continuous
+            };
+
+            lblExcelStatus = new Label
+            {
+                Text = "就绪。请载入 PDF 开始提取表格。",
+                Location = new Point(14, 574),
+                Size = new Size(390, 36),
+                ForeColor = Color.FromArgb(100, 116, 139),
+                Font = new Font("Microsoft YaHei UI", 9F)
+            };
+
+            pnlLeft.Controls.AddRange(new Control[] { progressBarExcel, lblExcelStatus });
+            tabPagePdfToExcel.Controls.Add(pnlLeft);
+
+            // 3. 右侧实时表格预览面板
+            Panel pnlRight = new Panel
+            {
+                Location = new Point(444, 64),
+                Size = new Size(556, 626),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            Label lblDgvHeader = new Label
+            {
+                Text = "📋 数据实时表格预览 (所见即所得)",
+                Location = new Point(12, 10),
+                Size = new Size(530, 24),
+                Font = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            dgvPdfExcel = new DataGridView
+            {
+                Location = new Point(12, 40),
+                Size = new Size(530, 570),
+                BackgroundColor = Color.White,
+                BorderStyle = BorderStyle.None,
+                GridColor = Color.FromArgb(226, 232, 240),
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AllowUserToOrderColumns = false,
+                RowHeadersVisible = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None
+            };
+            dgvPdfExcel.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(240, 244, 250);
+            dgvPdfExcel.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(30, 41, 59);
+            dgvPdfExcel.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold);
+            dgvPdfExcel.ColumnHeadersHeight = 32;
+            dgvPdfExcel.EnableHeadersVisualStyles = false;
+            dgvPdfExcel.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(248, 250, 254);
+            dgvPdfExcel.DefaultCellStyle.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+            dgvPdfExcel.DefaultCellStyle.ForeColor = Color.FromArgb(51, 65, 85);
+            dgvPdfExcel.RowTemplate.Height = 28;
+
+            // Enable DoubleBuffered on DataGridView via reflection
+            try
+            {
+                typeof(DataGridView).InvokeMember("DoubleBuffered",
+                    BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.SetProperty,
+                    null, dgvPdfExcel, new object[] { true });
+            }
+            catch { }
+
+            pnlRight.Controls.AddRange(new Control[] { lblDgvHeader, dgvPdfExcel });
+            tabPagePdfToExcel.Controls.Add(pnlRight);
+        }
+
+        public void LoadPdfForExcel(string filePath)
+        {
+            if (!File.Exists(filePath)) return;
+            currentPdfForExcelPath = filePath;
+            lblPdfExcelFileInfo.Text = "已载入: " + Path.GetFileName(filePath) + " (正在高精解析报表结构...)";
+            progressBarExcel.Value = 30;
+
+            try
+            {
+                currentExtractedSheets = PdfTableExtractor.ExtractWorkbook(filePath);
+                progressBarExcel.Value = 100;
+
+                cmbExcelSheets.Items.Clear();
+                if (currentExtractedSheets.Count > 1)
+                {
+                    cmbExcelSheets.Items.Add("⭐ [全部工作表] (多Sheet合并导出 - 共" + currentExtractedSheets.Count + "个报表)");
+                }
+                for (int i = 0; i < currentExtractedSheets.Count; i++)
+                {
+                    var s = currentExtractedSheets[i];
+                    cmbExcelSheets.Items.Add(string.Format("{0}. {1} ({2}行 × {3}列)", i + 1, s.Title, s.Rows.Count, s.Headers.Count));
+                }
+
+                if (cmbExcelSheets.Items.Count > 0) cmbExcelSheets.SelectedIndex = (currentExtractedSheets.Count > 1) ? 1 : 0;
+
+                string defaultOut = Path.Combine(Path.GetDirectoryName(filePath), Path.GetFileNameWithoutExtension(filePath) + ".xlsx");
+                txtExcelOutputDir.Text = defaultOut;
+
+                int totalRows = 0;
+                foreach (var s in currentExtractedSheets) totalRows += s.Rows.Count;
+                lblPdfExcelFileInfo.Text = string.Format("已载入: {0} (共 {1} 页，检测到 {2} 个财务报表，合计 {3} 行)", Path.GetFileName(filePath), currentExtractedSheets.Count, currentExtractedSheets.Count, totalRows);
+                lblExcelStatus.Text = "✅ 解析完成！可点击「立即导出 Excel 表格」或在右侧预览。";
+            }
+            catch (Exception ex)
+            {
+                progressBarExcel.Value = 0;
+                lblPdfExcelFileInfo.Text = "解析失败: " + ex.Message;
+                lblExcelStatus.Text = "❌ 解析出错: " + ex.Message;
+                MessageBox.Show("解析 PDF 报表结构时出错：\n" + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void CmbExcelSheets_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (currentExtractedSheets == null || currentExtractedSheets.Count == 0) return;
+            int idx = cmbExcelSheets.SelectedIndex;
+            if (currentExtractedSheets.Count > 1)
+            {
+                if (idx == 0) idx = 1; // display first sheet if "all" selected
+                int sheetIdx = idx - 1;
+                if (sheetIdx >= 0 && sheetIdx < currentExtractedSheets.Count)
+                {
+                    DisplaySheetInGrid(currentExtractedSheets[sheetIdx]);
+                }
+            }
+            else if (idx >= 0 && idx < currentExtractedSheets.Count)
+            {
+                DisplaySheetInGrid(currentExtractedSheets[idx]);
+            }
+        }
+
+        private void DisplaySheetInGrid(TableSheet sheet)
+        {
+            dgvPdfExcel.Columns.Clear();
+            dgvPdfExcel.Rows.Clear();
+
+            if (sheet == null || sheet.Headers.Count == 0) return;
+
+            for (int c = 0; c < sheet.Headers.Count; c++)
+            {
+                string hName = sheet.Headers[c];
+                var col = new DataGridViewTextBoxColumn
+                {
+                    HeaderText = hName,
+                    Width = (hName.Contains("资产") || hName.Contains("负债") || hName.Contains("项目")) ? 140 :
+                            (hName.Contains("金额") || hName.Contains("余额")) ? 115 : 60
+                };
+                if (hName.Contains("金额") || hName.Contains("余额") || hName.Contains("行次"))
+                {
+                    col.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
+                }
+                else
+                {
+                    col.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft;
+                }
+                dgvPdfExcel.Columns.Add(col);
+            }
+
+            foreach (var r in sheet.Rows)
+            {
+                object[] vals = new object[sheet.Headers.Count];
+                for (int c = 0; c < sheet.Headers.Count; c++)
+                {
+                    vals[c] = (c < r.Count) ? r[c].Text : "";
+                }
+                dgvPdfExcel.Rows.Add(vals);
+            }
+        }
+
+        private void BtnBrowseExcelOutputDir_Click(object sender, EventArgs e)
+        {
+            using (SaveFileDialog sfd = new SaveFileDialog())
+            {
+                sfd.Title = "选择 Excel 保存路径";
+                sfd.Filter = rbExportXlsx.Checked ? "Excel 工作簿 (*.xlsx)|*.xlsx" : "CSV 逗号分隔表格 (*.csv)|*.csv";
+                if (!string.IsNullOrEmpty(txtExcelOutputDir.Text))
+                {
+                    try
+                    {
+                        sfd.InitialDirectory = Path.GetDirectoryName(txtExcelOutputDir.Text);
+                        sfd.FileName = Path.GetFileName(txtExcelOutputDir.Text);
+                    }
+                    catch { }
+                }
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    txtExcelOutputDir.Text = sfd.FileName;
+                }
+            }
+        }
+
+        private void BtnExportExcel_Click(object sender, EventArgs e)
+        {
+            if (currentExtractedSheets == null || currentExtractedSheets.Count == 0)
+            {
+                MessageBox.Show("请先选择并解析 PDF 报表文件！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string outPath = txtExcelOutputDir.Text.Trim();
+            if (string.IsNullOrEmpty(outPath))
+            {
+                MessageBox.Show("请指定导出文件的保存路径！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            btnExportExcel.Enabled = false;
+            progressBarExcel.Value = 20;
+            lblExcelStatus.Text = "正在生成 Excel 工作簿...";
+
+            bool isCsv = rbExportCsv.Checked;
+            int selectedSheetIdx = cmbExcelSheets.SelectedIndex;
+
+            workerPdfToExcel.RunWorkerAsync(new object[] { outPath, isCsv, selectedSheetIdx });
+        }
+
+        private void WorkerPdfToExcel_DoWork(object sender, DoWorkEventArgs e)
+        {
+            object[] args = (object[])e.Argument;
+            string outPath = (string)args[0];
+            bool isCsv = (bool)args[1];
+            int sheetSelectIdx = (int)args[2];
+
+            List<TableSheet> exportSheets = new List<TableSheet>();
+            if (currentExtractedSheets.Count > 1)
+            {
+                if (sheetSelectIdx == 0)
+                {
+                    exportSheets.AddRange(currentExtractedSheets);
+                }
+                else
+                {
+                    int target = sheetSelectIdx - 1;
+                    if (target >= 0 && target < currentExtractedSheets.Count)
+                    {
+                        exportSheets.Add(currentExtractedSheets[target]);
+                    }
+                }
+            }
+            else
+            {
+                exportSheets.AddRange(currentExtractedSheets);
+            }
+
+            workerPdfToExcel.ReportProgress(50, "正在组装 OpenXML 工作簿包...");
+
+            if (isCsv)
+            {
+                StringBuilder sbCsv = new StringBuilder();
+                foreach (var s in exportSheets)
+                {
+                    sbCsv.AppendLine(string.Join(",", s.Headers.ToArray()));
+                    foreach (var r in s.Rows)
+                    {
+                        var rowItems = new List<string>();
+                        foreach (var cell in r) rowItems.Add("\"" + cell.Text.Replace("\"", "\"\"") + "\"");
+                        sbCsv.AppendLine(string.Join(",", rowItems.ToArray()));
+                    }
+                }
+                File.WriteAllText(outPath, sbCsv.ToString(), Encoding.UTF8);
+            }
+            else
+            {
+                byte[] xlsxBytes = ExcelBuilder.GenerateXlsx(exportSheets);
+                File.WriteAllBytes(outPath, xlsxBytes);
+            }
+
+            workerPdfToExcel.ReportProgress(100, "导出完成！");
+            e.Result = outPath;
+        }
+
+        private void WorkerPdfToExcel_ProgressChanged(object sender, ProgressChangedEventArgs e)
+        {
+            progressBarExcel.Value = Math.Min(100, Math.Max(0, e.ProgressPercentage));
+            lblExcelStatus.Text = (string)e.UserState;
+        }
+
+        private void WorkerPdfToExcel_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        {
+            btnExportExcel.Enabled = true;
+            progressBarExcel.Value = 100;
+
+            if (e.Error != null)
+            {
+                lblExcelStatus.Text = "❌ 导出失败: " + e.Error.Message;
+                MessageBox.Show("导出 Excel 时发生错误：\n" + e.Error.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            string outPath = (string)e.Result;
+            lblExcelStatus.Text = "✅ 成功导出 Excel: " + outPath;
+
+            DialogResult dr = MessageBox.Show("Excel 表格导出成功！\n\n保存路径：" + outPath + "\n\n是否立即打开导出的 Excel 文件？", "导出完成", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (dr == DialogResult.Yes)
+            {
+                try { System.Diagnostics.Process.Start(outPath); } catch { }
+            }
+        }
+
+        #endregion
+
+        #region ================== Tab 4：Excel 转成 PDF UI 与逻辑 ==================
+
+        private void BuildTabExcelToPdf()
+        {
+            // 1. 顶部工具栏
+            Panel topBar = new Panel
+            {
+                Location = new Point(0, 0),
+                Size = new Size(1012, 54),
+                BackColor = Color.White
+            };
+
+            Button btnOpenExcel = CreateButton("📂 选择 Excel 文件...", 155, 34, Color.FromArgb(99, 102, 241), Color.White);
+            btnOpenExcel.Location = new Point(15, 10);
+            btnOpenExcel.Click += delegate {
+                using (OpenFileDialog ofd = new OpenFileDialog())
+                {
+                    ofd.Title = "选择需要转换为 PDF 的 Excel 文件";
+                    ofd.Filter = "Excel 与 表格文件 (*.xlsx;*.xls;*.csv)|*.xlsx;*.xls;*.csv|所有文件 (*.*)|*.*";
+                    if (ofd.ShowDialog() == DialogResult.OK)
+                    {
+                        LoadExcelDocument(ofd.FileName);
+                    }
+                }
+            };
+
+            lblExcelPdfFileInfo = new Label
+            {
+                Text = "请点击左侧按钮或直接拖拽 Excel (*.xlsx, *.xls, *.csv) 文件至此窗口",
+                Location = new Point(180, 17),
+                Size = new Size(705, 22),
+                ForeColor = Color.FromArgb(71, 85, 105),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular),
+                AutoEllipsis = true
+            };
+
+            Button btnHelpTab4 = CreateButton("💡 使用须知", 100, 34, Color.FromArgb(243, 244, 246), Color.FromArgb(79, 70, 229));
+            btnHelpTab4.Location = new Point(895, 10);
+            btnHelpTab4.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+            btnHelpTab4.Click += delegate { ShowHelpDialog(3); };
+
+            topBar.Controls.AddRange(new Control[] { btnOpenExcel, lblExcelPdfFileInfo, btnHelpTab4 });
+            tabPageExcelToPdf.Controls.Add(topBar);
+
+            // 2. 左侧控制面板
+            Panel pnlLeft = new Panel
+            {
+                Location = new Point(12, 64),
+                Size = new Size(420, 626),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            // 2.1 工作表选择
+            GroupBox grpSheets = new GroupBox
+            {
+                Text = "工作表选择",
+                Location = new Point(14, 12),
+                Size = new Size(390, 105),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            Label lblSelect = new Label
+            {
+                Text = "选择要转换的工作表：",
+                Location = new Point(15, 25),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(51, 65, 85)
+            };
+
+            cmbExcelToPdfSheets = new ComboBox
+            {
+                Location = new Point(18, 52),
+                Size = new Size(355, 26),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cmbExcelToPdfSheets.Items.Add("尚未载入任何 Excel 工作簿");
+            cmbExcelToPdfSheets.SelectedIndex = 0;
+            cmbExcelToPdfSheets.SelectedIndexChanged += delegate { RenderExcelPdfPreview(); };
+
+            grpSheets.Controls.AddRange(new Control[] { lblSelect, cmbExcelToPdfSheets });
+            pnlLeft.Controls.Add(grpSheets);
+
+            // 2.2 版式与主题
+            GroupBox grpLayout = new GroupBox
+            {
+                Text = "页面版式与风格",
+                Location = new Point(14, 126),
+                Size = new Size(390, 150),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            Label lblOri = new Label { Text = "页面方向：", Location = new Point(15, 26), AutoSize = true, ForeColor = Color.FromArgb(51, 65, 85) };
+            cmbExcelPdfOrientation = new ComboBox { Location = new Point(90, 23), Size = new Size(283, 26), DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbExcelPdfOrientation.Items.AddRange(new object[] {
+                "🧭 智能感应 (列数>5自动横向，否则纵向 · 推荐)",
+                "横向 (Landscape - 宽表格推荐)",
+                "纵向 (Portrait - 窄表格推荐)"
+            });
+            cmbExcelPdfOrientation.SelectedIndex = 0;
+            cmbExcelPdfOrientation.SelectedIndexChanged += delegate { RenderExcelPdfPreview(); };
+
+            Label lblTheme = new Label { Text = "表格主题：", Location = new Point(15, 66), AutoSize = true, ForeColor = Color.FromArgb(51, 65, 85) };
+            cmbExcelPdfTheme = new ComboBox { Location = new Point(90, 63), Size = new Size(283, 26), DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbExcelPdfTheme.Items.AddRange(new object[] {
+                "经典财务蓝 (精致表头 + 舒适条纹 · 推荐)",
+                "极简黑白网格 (正式红头文件/印刷推荐)",
+                "现代商务灰 (淡雅沉稳)"
+            });
+            cmbExcelPdfTheme.SelectedIndex = 0;
+            cmbExcelPdfTheme.SelectedIndexChanged += delegate { RenderExcelPdfPreview(); };
+
+            chkExcelPdfPageNum = new CheckBox
+            {
+                Text = "页脚打印页码与工作表名称 (如: 工作表 第 1 / 3 页)",
+                Location = new Point(18, 108),
+                AutoSize = true,
+                Checked = true,
+                ForeColor = Color.FromArgb(79, 70, 229),
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold)
+            };
+
+            grpLayout.Controls.AddRange(new Control[] { lblOri, cmbExcelPdfOrientation, lblTheme, cmbExcelPdfTheme, chkExcelPdfPageNum });
+            pnlLeft.Controls.Add(grpLayout);
+
+            // 2.3 输出路径与生成
+            GroupBox grpOut = new GroupBox
+            {
+                Text = "PDF 导出保存路径",
+                Location = new Point(14, 285),
+                Size = new Size(390, 160),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            Label lblPdfPath = new Label { Text = "保存路径：", Location = new Point(15, 25), AutoSize = true, ForeColor = Color.FromArgb(51, 65, 85) };
+            txtExcelPdfOutputDir = new TextBox { Location = new Point(18, 48), Size = new Size(275, 25) };
+            btnBrowseExcelPdfOutputDir = CreateButton("浏览...", 70, 27, Color.FromArgb(241, 245, 249), Color.FromArgb(51, 65, 85));
+            btnBrowseExcelPdfOutputDir.Location = new Point(300, 47);
+            btnBrowseExcelPdfOutputDir.Click += BtnBrowseExcelPdfOutputDir_Click;
+
+            btnExportExcelPdf = CreateButton("⚡ 立即生成 PDF 文件", 355, 42, Color.FromArgb(99, 102, 241), Color.White);
+            btnExportExcelPdf.Location = new Point(18, 92);
+            btnExportExcelPdf.Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold);
+            btnExportExcelPdf.Click += BtnExportExcelPdf_Click;
+
+            grpOut.Controls.AddRange(new Control[] { lblPdfPath, txtExcelPdfOutputDir, btnBrowseExcelPdfOutputDir, btnExportExcelPdf });
+            pnlLeft.Controls.Add(grpOut);
+
+            // 进度条与状态
+            progressBarExcelPdf = new ProgressBar
+            {
+                Location = new Point(14, 550),
+                Size = new Size(390, 14),
+                Style = ProgressBarStyle.Continuous
+            };
+
+            lblExcelPdfStatus = new Label
+            {
+                Text = "就绪。请载入 Excel 文件开始转换。",
+                Location = new Point(14, 574),
+                Size = new Size(390, 36),
+                ForeColor = Color.FromArgb(100, 116, 139),
+                Font = new Font("Microsoft YaHei UI", 9F)
+            };
+
+            pnlLeft.Controls.AddRange(new Control[] { progressBarExcelPdf, lblExcelPdfStatus });
+            tabPageExcelToPdf.Controls.Add(pnlLeft);
+
+            // 3. 右侧 PDF 实时大图效果预览
+            Panel pnlRight = new Panel
+            {
+                Location = new Point(444, 64),
+                Size = new Size(556, 626),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            Label lblPreviewHeader = new Label
+            {
+                Text = "📑 PDF 页面效果预览",
+                Location = new Point(12, 10),
+                Size = new Size(530, 24),
+                Font = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            previewBoxExcelPdf = new PictureBox
+            {
+                Location = new Point(12, 40),
+                Size = new Size(530, 520),
+                BackColor = Color.FromArgb(238, 242, 246),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            Panel pnlNav = new Panel
+            {
+                Location = new Point(12, 570),
+                Size = new Size(530, 42),
+                BackColor = Color.FromArgb(248, 250, 252)
+            };
+
+            btnPrevExcelPdfPage = CreateButton("◀ 上一页", 90, 30, Color.White, Color.FromArgb(51, 65, 85));
+            btnPrevExcelPdfPage.Location = new Point(110, 6);
+            btnPrevExcelPdfPage.Click += delegate {
+                if (currentExcelPdfPreviewPageIndex > 0)
+                {
+                    currentExcelPdfPreviewPageIndex--;
+                    UpdateExcelPdfPreviewImage();
+                }
+            };
+
+            lblExcelPdfPageInfo = new Label
+            {
+                Text = "第 0 / 0 页",
+                Location = new Point(210, 10),
+                Size = new Size(110, 22),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            btnNextExcelPdfPage = CreateButton("下一页 ▶", 90, 30, Color.White, Color.FromArgb(51, 65, 85));
+            btnNextExcelPdfPage.Location = new Point(330, 6);
+            btnNextExcelPdfPage.Click += delegate {
+                if (currentExcelPdfPreviewPageIndex < currentExcelPdfPageBitmaps.Count - 1)
+                {
+                    currentExcelPdfPreviewPageIndex++;
+                    UpdateExcelPdfPreviewImage();
+                }
+            };
+
+            pnlNav.Controls.AddRange(new Control[] { btnPrevExcelPdfPage, lblExcelPdfPageInfo, btnNextExcelPdfPage });
+            pnlRight.Controls.AddRange(new Control[] { lblPreviewHeader, previewBoxExcelPdf, pnlNav });
+            tabPageExcelToPdf.Controls.Add(pnlRight);
+        }
+
+        public void LoadExcelDocument(string filePath)
+        {
+            if (!File.Exists(filePath)) return;
+            currentExcelPath = filePath;
+            lblExcelPdfFileInfo.Text = "已载入: " + Path.GetFileName(filePath) + " (正在读取工作表...)";
+
+            try
+            {
+                string ext = Path.GetExtension(filePath).ToLowerInvariant();
+                if (ext == ".csv")
+                {
+                    currentLoadedExcelSheets = ExcelReader.ReadCsv(filePath);
+                }
+                else
+                {
+                    currentLoadedExcelSheets = ExcelReader.ReadXlsx(filePath);
+                }
+
+                cmbExcelToPdfSheets.Items.Clear();
+                if (currentLoadedExcelSheets.Count > 1)
+                {
+                    cmbExcelToPdfSheets.Items.Add("⭐ [全部工作表合并导出] (共 " + currentLoadedExcelSheets.Count + " 个工作表)");
+                }
+                for (int i = 0; i < currentLoadedExcelSheets.Count; i++)
+                {
+                    var s = currentLoadedExcelSheets[i];
+                    cmbExcelToPdfSheets.Items.Add(string.Format("{0}. {1} ({2}行)", i + 1, s.Name, s.Rows.Count));
+                }
+                if (cmbExcelToPdfSheets.Items.Count > 0) cmbExcelToPdfSheets.SelectedIndex = 0;
+
+                string defaultOut = Path.Combine(Path.GetDirectoryName(filePath), Path.GetFileNameWithoutExtension(filePath) + ".pdf");
+                txtExcelPdfOutputDir.Text = defaultOut;
+
+                int totalRows = 0;
+                foreach (var s in currentLoadedExcelSheets) totalRows += s.Rows.Count;
+                lblExcelPdfFileInfo.Text = string.Format("已载入: {0} (共 {1} 个工作表，{2} 行数据)", Path.GetFileName(filePath), currentLoadedExcelSheets.Count, totalRows);
+                lblExcelPdfStatus.Text = "✅ 读取成功！右侧已就绪实时渲染预览。";
+
+                RenderExcelPdfPreview();
+            }
+            catch (Exception ex)
+            {
+                lblExcelPdfFileInfo.Text = "读取失败: " + ex.Message;
+                lblExcelPdfStatus.Text = "❌ 出错: " + ex.Message;
+                MessageBox.Show("读取 Excel 文件失败：\n" + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void RenderExcelPdfPreview()
+        {
+            if (currentLoadedExcelSheets == null || currentLoadedExcelSheets.Count == 0) return;
+
+            // Dispose old bitmaps
+            foreach (var b in currentExcelPdfPageBitmaps) b.Dispose();
+            currentExcelPdfPageBitmaps.Clear();
+            currentExcelPdfPreviewPageIndex = 0;
+
+            List<ExcelSheetData> targetSheets = new List<ExcelSheetData>();
+            int idx = cmbExcelToPdfSheets.SelectedIndex;
+            if (currentLoadedExcelSheets.Count > 1)
+            {
+                if (idx == 0) targetSheets.AddRange(currentLoadedExcelSheets);
+                else if (idx - 1 >= 0 && idx - 1 < currentLoadedExcelSheets.Count) targetSheets.Add(currentLoadedExcelSheets[idx - 1]);
+            }
+            else if (idx >= 0 && idx < currentLoadedExcelSheets.Count)
+            {
+                targetSheets.Add(currentLoadedExcelSheets[idx]);
+            }
+
+            int oriMode = cmbExcelPdfOrientation.SelectedIndex;
+            int themeMode = cmbExcelPdfTheme.SelectedIndex;
+            bool printFooter = chkExcelPdfPageNum.Checked;
+
+            foreach (var s in targetSheets)
+            {
+                var bmps = ExcelToPdfRenderer.RenderSheetToBitmaps(s, oriMode, themeMode, printFooter);
+                currentExcelPdfPageBitmaps.AddRange(bmps);
+            }
+
+            UpdateExcelPdfPreviewImage();
+        }
+
+        private void UpdateExcelPdfPreviewImage()
+        {
+            if (currentExcelPdfPageBitmaps.Count == 0)
+            {
+                previewBoxExcelPdf.Image = null;
+                lblExcelPdfPageInfo.Text = "第 0 / 0 页";
+                btnPrevExcelPdfPage.Enabled = false;
+                btnNextExcelPdfPage.Enabled = false;
+                return;
+            }
+
+            if (currentExcelPdfPreviewPageIndex < 0) currentExcelPdfPreviewPageIndex = 0;
+            if (currentExcelPdfPreviewPageIndex >= currentExcelPdfPageBitmaps.Count) currentExcelPdfPreviewPageIndex = currentExcelPdfPageBitmaps.Count - 1;
+
+            previewBoxExcelPdf.Image = currentExcelPdfPageBitmaps[currentExcelPdfPreviewPageIndex];
+            lblExcelPdfPageInfo.Text = string.Format("第 {0} / {1} 页", currentExcelPdfPreviewPageIndex + 1, currentExcelPdfPageBitmaps.Count);
+
+            btnPrevExcelPdfPage.Enabled = (currentExcelPdfPreviewPageIndex > 0);
+            btnNextExcelPdfPage.Enabled = (currentExcelPdfPreviewPageIndex < currentExcelPdfPageBitmaps.Count - 1);
+        }
+
+        private void BtnBrowseExcelPdfOutputDir_Click(object sender, EventArgs e)
+        {
+            using (SaveFileDialog sfd = new SaveFileDialog())
+            {
+                sfd.Title = "选择生成的 PDF 保存路径";
+                sfd.Filter = "PDF 电子文档 (*.pdf)|*.pdf";
+                if (!string.IsNullOrEmpty(txtExcelPdfOutputDir.Text))
+                {
+                    try
+                    {
+                        sfd.InitialDirectory = Path.GetDirectoryName(txtExcelPdfOutputDir.Text);
+                        sfd.FileName = Path.GetFileName(txtExcelPdfOutputDir.Text);
+                    }
+                    catch { }
+                }
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    txtExcelPdfOutputDir.Text = sfd.FileName;
+                }
+            }
+        }
+
+        private void BtnExportExcelPdf_Click(object sender, EventArgs e)
+        {
+            if (currentLoadedExcelSheets == null || currentLoadedExcelSheets.Count == 0)
+            {
+                MessageBox.Show("请先选择并载入 Excel 文件！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string outPath = txtExcelPdfOutputDir.Text.Trim();
+            if (string.IsNullOrEmpty(outPath))
+            {
+                MessageBox.Show("请指定 PDF 保存路径！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            btnExportExcelPdf.Enabled = false;
+            progressBarExcelPdf.Value = 20;
+            lblExcelPdfStatus.Text = "正在生成高清 PDF 文档...";
+
+            workerExcelToPdf.RunWorkerAsync(outPath);
+        }
+
+        private void WorkerExcelToPdf_DoWork(object sender, DoWorkEventArgs e)
+        {
+            string outPath = (string)e.Argument;
+
+            workerExcelToPdf.ReportProgress(40, "正在渲染各工作表矢量页面...");
+
+            List<Bitmap> renderBitmaps = new List<Bitmap>();
+            List<ExcelSheetData> targetSheets = new List<ExcelSheetData>();
+            int idx = 0;
+            int oriMode = 0;
+            int themeMode = 0;
+            bool printFooter = true;
+
+            this.Invoke(new Action(delegate {
+                idx = cmbExcelToPdfSheets.SelectedIndex;
+                oriMode = cmbExcelPdfOrientation.SelectedIndex;
+                themeMode = cmbExcelPdfTheme.SelectedIndex;
+                printFooter = chkExcelPdfPageNum.Checked;
+
+                if (currentLoadedExcelSheets.Count > 1)
+                {
+                    if (idx == 0) targetSheets.AddRange(currentLoadedExcelSheets);
+                    else if (idx - 1 >= 0 && idx - 1 < currentLoadedExcelSheets.Count) targetSheets.Add(currentLoadedExcelSheets[idx - 1]);
+                }
+                else if (idx >= 0 && idx < currentLoadedExcelSheets.Count)
+                {
+                    targetSheets.Add(currentLoadedExcelSheets[idx]);
+                }
+            }));
+
+            foreach (var s in targetSheets)
+            {
+                var bmps = ExcelToPdfRenderer.RenderSheetToBitmaps(s, oriMode, themeMode, printFooter);
+                renderBitmaps.AddRange(bmps);
+            }
+
+            workerExcelToPdf.ReportProgress(80, "正在封装 PDF 文件流...");
+
+            // Call static BuildPdf
+            PdfBuilder.BuildPdfFromBitmaps(renderBitmaps, outPath);
+
+            foreach (var b in renderBitmaps) b.Dispose();
+
+            workerExcelToPdf.ReportProgress(100, "转换完成！");
+            e.Result = outPath;
+        }
+
+        private void WorkerExcelToPdf_ProgressChanged(object sender, ProgressChangedEventArgs e)
+        {
+            progressBarExcelPdf.Value = Math.Min(100, Math.Max(0, e.ProgressPercentage));
+            lblExcelPdfStatus.Text = (string)e.UserState;
+        }
+
+        private void WorkerExcelToPdf_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        {
+            btnExportExcelPdf.Enabled = true;
+            progressBarExcelPdf.Value = 100;
+
+            if (e.Error != null)
+            {
+                lblExcelPdfStatus.Text = "❌ 转换失败: " + e.Error.Message;
+                MessageBox.Show("转换 PDF 发生错误：\n" + e.Error.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            string outPath = (string)e.Result;
+            lblExcelPdfStatus.Text = "✅ 成功生成 PDF: " + outPath;
+
+            DialogResult dr = MessageBox.Show("PDF 文件转换生成成功！\n\n保存路径：" + outPath + "\n\n是否立即打开生成的 PDF 文件？", "转换完成", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (dr == DialogResult.Yes)
+            {
+                try { System.Diagnostics.Process.Start(outPath); } catch { }
+            }
+        }
+
+        #endregion
+
+
         [STAThread]
         static void Main(string[] args)
         {
@@ -2643,25 +3655,37 @@ namespace DynamicWinRt
                 SizeMode = TabSizeMode.Fixed
             };
 
-            TabPage tab1 = new TabPage("📄 图片合成 PDF · 使用须知");
+            helpTabControl.ItemSize = new Size(185, 36);
+
+            TabPage tab1 = new TabPage("📄 图片合成 PDF");
             tab1.BackColor = Color.White;
             tab1.Font = new Font("Microsoft YaHei UI", 9.5F);
-
             Panel pnlTab1 = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 16, 12) };
-            TextBox txtTab1 = CreateHelpTextBox(GetTab1HelpText());
-            pnlTab1.Controls.Add(txtTab1);
+            pnlTab1.Controls.Add(CreateHelpTextBox(GetTab1HelpText()));
             tab1.Controls.Add(pnlTab1);
 
-            TabPage tab2 = new TabPage("🖼️ PDF 提取图片 · 使用须知");
+            TabPage tab2 = new TabPage("🖼️ PDF 提取图片");
             tab2.BackColor = Color.White;
             tab2.Font = new Font("Microsoft YaHei UI", 9.5F);
-
             Panel pnlTab2 = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 16, 12) };
-            TextBox txtTab2 = CreateHelpTextBox(GetTab2HelpText());
-            pnlTab2.Controls.Add(txtTab2);
+            pnlTab2.Controls.Add(CreateHelpTextBox(GetTab2HelpText()));
             tab2.Controls.Add(pnlTab2);
 
-            helpTabControl.TabPages.AddRange(new TabPage[] { tab1, tab2 });
+            TabPage tab3 = new TabPage("📊 PDF 提取 Excel");
+            tab3.BackColor = Color.White;
+            tab3.Font = new Font("Microsoft YaHei UI", 9.5F);
+            Panel pnlTab3 = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 16, 12) };
+            pnlTab3.Controls.Add(CreateHelpTextBox(GetTab3HelpText()));
+            tab3.Controls.Add(pnlTab3);
+
+            TabPage tab4 = new TabPage("📑 Excel 转成 PDF");
+            tab4.BackColor = Color.White;
+            tab4.Font = new Font("Microsoft YaHei UI", 9.5F);
+            Panel pnlTab4 = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 16, 12) };
+            pnlTab4.Controls.Add(CreateHelpTextBox(GetTab4HelpText()));
+            tab4.Controls.Add(pnlTab4);
+
+            helpTabControl.TabPages.AddRange(new TabPage[] { tab1, tab2, tab3, tab4 });
             this.Controls.Add(helpTabControl);
 
             helpTabControl.BringToFront();
@@ -2762,5 +3786,1173 @@ namespace DynamicWinRt
 🔗 开源项目主页 (GitHub)：https://github.com/786381743syq/FinancePdfTool
 欢迎 Star 支持与提交反馈！";
         }
+
+        private string GetTab3HelpText()
+        {
+            return 
+@"【一、PDF 提取 Excel 核心特性】
+1. 专为财务报表深度定制：智能识别中国小企业会计准则、企业会计准则标准《资产负债表》（8列双栏对称布局）、《利润表》（4列损益单栏）、《现金流量表》等各类电子税务局申报报表。
+2. 零丢失高精度坐标还原：通过底层解析 PDF 矢量文字流物理坐标，毫秒级聚类排版，表头、行次、期末余额、年初余额绝对不串行错位。
+3. 纯正数值格式与公式支持：提取的所有金额数字以纯浮点数值保存并应用千分位财务格式，导出至 Excel 后可直接使用 SUM() 等公式联动计算！
+
+【二、导出模式与多工作表】
+1. 多 Sheet 智能合规打包：同一个 PDF 文件内的多张报表（如第 1 页资产负债表、第 2 页利润表、第 3 页现金流量表）自动提取为同一个 Excel 工作簿的不同工作表。
+2. 格式自由选择：支持直接导出标准现代化 Excel 工作簿 (*.xlsx)，也支持导出轻量 CSV 文本 (*.csv)。
+3. 所见即所得实时表格预览：在界面右侧内置 DataGridView，载入 PDF 后即可切换查看每个 Sheet 的真实排版数据。
+
+【三、数据安全与隐私承诺】
+• 100% 纯本地单机离线运行，无需安装 Microsoft Office，不调用任何云端 API，财务核心机密绝不上网！
+
+======================================================================
+🔗 开源项目主页 (GitHub)：https://github.com/786381743syq/FinancePdfTool
+欢迎 Star 支持与提交反馈！";
+        }
+
+        private string GetTab4HelpText()
+        {
+            return 
+@"【一、Excel 转成 PDF 核心特性】
+1. 支持格式广泛：支持直接载入标准 Excel 工作簿 (*.xlsx)、早期工作簿 (*.xls) 以及逗号分隔表格 (*.csv)。
+2. 多工作表全量转换：支持一键将 Excel 工作簿内的全部 Sheet 合并渲染为单本 PDF，也可按需单独导出某一指定工作表。
+3. 智能纸张自适应：
+   • 🧭 智能感应：当工作表列数较多（>5列）时自动转为横向 A4 宽幅排版，避免挤压；列数较少时自动竖向；
+   • 也可强制锁定为「横向」或「纵向」。
+
+【二、精致财务美学样式】
+1. 经典财务蓝（推荐）：柔和商务蓝表头，交替条纹斑马线，清晰浅灰网格，适合公司正式对账与内部汇报。
+2. 极简黑白网格：纯正黑白分明线条，适合正式红头发文、公章加盖与黑白激光打印。
+3. 现代商务灰：淡雅灰阶风格，低调沉稳。
+
+【三、智能分页与页码】
+• 自动按行高进行精确分页，表头自动对齐，并在每页底部打印「工作表名称  第 X / Y 页」页脚，专业规范。
+
+======================================================================
+🔗 开源项目主页 (GitHub)：https://github.com/786381743syq/FinancePdfTool
+欢迎 Star 支持与提交反馈！";
+        }
     }
+
+    // =========================================================================
+    // Supporting Classes for PDF-to-Excel & Excel-to-PDF Conversion
+    // =========================================================================
+
+    public class SimpleZipWriter
+    {
+        class ZipEntry
+        {
+            public string Path;
+            public uint Crc;
+            public uint CompressedSize;
+            public uint UncompressedSize;
+            public uint HeaderOffset;
+            public ushort Method;
+            public byte[] CompressedBytes;
+        }
+
+        public static byte[] CreateZip(Dictionary<string, byte[]> files)
+        {
+            using (var ms = new MemoryStream())
+            using (var bw = new BinaryWriter(ms))
+            {
+                var entries = new List<ZipEntry>();
+
+                foreach (var kvp in files)
+                {
+                    string entryPath = kvp.Key.Replace('\\', '/');
+                    byte[] raw = kvp.Value;
+                    uint crc = ComputeCrc32(raw);
+
+                    byte[] comp;
+                    ushort method;
+                    using (var compMs = new MemoryStream())
+                    {
+                        using (var deflate = new DeflateStream(compMs, CompressionMode.Compress, true))
+                        {
+                            deflate.Write(raw, 0, raw.Length);
+                        }
+                        comp = compMs.ToArray();
+                    }
+
+                    if (comp.Length < raw.Length)
+                    {
+                        method = 8;
+                    }
+                    else
+                    {
+                        method = 0;
+                        comp = raw;
+                    }
+
+                    var entry = new ZipEntry
+                    {
+                        Path = entryPath,
+                        Crc = crc,
+                        CompressedSize = (uint)comp.Length,
+                        UncompressedSize = (uint)raw.Length,
+                        HeaderOffset = (uint)ms.Position,
+                        Method = method,
+                        CompressedBytes = comp
+                    };
+                    entries.Add(entry);
+
+                    byte[] nameBytes = Encoding.UTF8.GetBytes(entryPath);
+
+                    bw.Write(0x04034b50);
+                    bw.Write((ushort)20);
+                    bw.Write((ushort)0x0800);
+                    bw.Write(entry.Method);
+                    bw.Write((ushort)0);
+                    bw.Write((ushort)0);
+                    bw.Write(entry.Crc);
+                    bw.Write(entry.CompressedSize);
+                    bw.Write(entry.UncompressedSize);
+                    bw.Write((ushort)nameBytes.Length);
+                    bw.Write((ushort)0);
+                    bw.Write(nameBytes);
+                    bw.Write(entry.CompressedBytes);
+                }
+
+                uint cdStart = (uint)ms.Position;
+
+                foreach (var entry in entries)
+                {
+                    byte[] nameBytes = Encoding.UTF8.GetBytes(entry.Path);
+                    bw.Write(0x02014b50);
+                    bw.Write((ushort)20);
+                    bw.Write((ushort)20);
+                    bw.Write((ushort)0x0800);
+                    bw.Write(entry.Method);
+                    bw.Write((ushort)0);
+                    bw.Write((ushort)0);
+                    bw.Write(entry.Crc);
+                    bw.Write(entry.CompressedSize);
+                    bw.Write(entry.UncompressedSize);
+                    bw.Write((ushort)nameBytes.Length);
+                    bw.Write((ushort)0);
+                    bw.Write((ushort)0);
+                    bw.Write((ushort)0);
+                    bw.Write((ushort)0);
+                    bw.Write((uint)0);
+                    bw.Write(entry.HeaderOffset);
+                    bw.Write(nameBytes);
+                }
+
+                uint cdSize = (uint)ms.Position - cdStart;
+
+                bw.Write(0x06054b50);
+                bw.Write((ushort)0);
+                bw.Write((ushort)0);
+                bw.Write((ushort)entries.Count);
+                bw.Write((ushort)entries.Count);
+                bw.Write(cdSize);
+                bw.Write(cdStart);
+                bw.Write((ushort)0);
+
+                return ms.ToArray();
+            }
+        }
+
+        static uint ComputeCrc32(byte[] data)
+        {
+            uint crc = 0xFFFFFFFF;
+            for (int i = 0; i < data.Length; i++)
+            {
+                byte b = data[i];
+                crc ^= b;
+                for (int j = 0; j < 8; j++)
+                {
+                    if ((crc & 1) != 0) crc = (crc >> 1) ^ 0xEDB88320;
+                    else crc >>= 1;
+                }
+            }
+            return ~crc;
+        }
+    }
+
+    public class SimpleZipReader
+    {
+        public static Dictionary<string, byte[]> ReadZip(byte[] zipBytes)
+        {
+            var result = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+            int eocdPos = -1;
+            for (int i = zipBytes.Length - 22; i >= 0; i--)
+            {
+                if (zipBytes[i] == 0x50 && zipBytes[i + 1] == 0x4b && zipBytes[i + 2] == 0x05 && zipBytes[i + 3] == 0x06)
+                {
+                    eocdPos = i;
+                    break;
+                }
+            }
+            if (eocdPos == -1) return result;
+
+            using (var ms = new MemoryStream(zipBytes))
+            using (var br = new BinaryReader(ms))
+            {
+                ms.Position = eocdPos + 10;
+                ushort totalEntries = br.ReadUInt16();
+                uint cdSize = br.ReadUInt32();
+                uint cdOffset = br.ReadUInt32();
+
+                ms.Position = cdOffset;
+                for (int e = 0; e < totalEntries; e++)
+                {
+                    uint sig = br.ReadUInt32();
+                    if (sig != 0x02014b50) break;
+
+                    br.ReadUInt16();
+                    br.ReadUInt16();
+                    ushort flags = br.ReadUInt16();
+                    ushort method = br.ReadUInt16();
+                    br.ReadUInt32();
+                    uint crc = br.ReadUInt32();
+                    uint compSize = br.ReadUInt32();
+                    uint uncompSize = br.ReadUInt32();
+                    ushort nameLen = br.ReadUInt16();
+                    ushort extraLen = br.ReadUInt16();
+                    ushort commentLen = br.ReadUInt16();
+                    br.ReadUInt32();
+                    br.ReadUInt32();
+                    uint localHeaderOffset = br.ReadUInt32();
+
+                    byte[] nameBytes = br.ReadBytes(nameLen);
+                    string entryName = Encoding.UTF8.GetString(nameBytes);
+                    if (extraLen > 0) br.ReadBytes(extraLen);
+                    if (commentLen > 0) br.ReadBytes(commentLen);
+
+                    long curCdPos = ms.Position;
+                    ms.Position = localHeaderOffset;
+                    uint localSig = br.ReadUInt32();
+                    if (localSig == 0x04034b50)
+                    {
+                        ms.Position += 22;
+                        ushort locNameLen = br.ReadUInt16();
+                        ushort locExtraLen = br.ReadUInt16();
+                        ms.Position += locNameLen + locExtraLen;
+
+                        byte[] compData = br.ReadBytes((int)compSize);
+                        byte[] uncompData;
+
+                        if (method == 0) uncompData = compData;
+                        else if (method == 8)
+                        {
+                            using (var compMs = new MemoryStream(compData))
+                            using (var def = new DeflateStream(compMs, CompressionMode.Decompress))
+                            using (var outMs = new MemoryStream())
+                            {
+                                def.CopyTo(outMs);
+                                uncompData = outMs.ToArray();
+                            }
+                        }
+                        else uncompData = new byte[0];
+
+                        result[entryName] = uncompData;
+                    }
+                    ms.Position = curCdPos;
+                }
+            }
+            return result;
+        }
+    }
+
+    public class TableCell
+    {
+        public string Text = "";
+        public bool IsNumeric = false;
+        public double NumericValue = 0;
+    }
+
+    public class TableSheet
+    {
+        public string Title = "工作表";
+        public List<string> MetaLines = new List<string>();
+        public List<string> Headers = new List<string>();
+        public List<List<TableCell>> Rows = new List<List<TableCell>>();
+    }
+
+    public class PdfTableExtractor
+    {
+        public class TextChunk
+        {
+            public double X;
+            public double Y;
+            public string Text;
+        }
+
+        public static byte[] DecompressZlib(byte[] input)
+        {
+            if (input == null || input.Length < 6) return null;
+            using (var msInput = new MemoryStream(input, 2, input.Length - 6))
+            using (var deflate = new DeflateStream(msInput, CompressionMode.Decompress))
+            using (var msOutput = new MemoryStream())
+            {
+                try { deflate.CopyTo(msOutput); return msOutput.ToArray(); }
+                catch { return null; }
+            }
+        }
+
+        public static Dictionary<int, string> ParseCMap(string cmapText)
+        {
+            var map = new Dictionary<int, string>();
+            var matches = Regex.Matches(cmapText, @"<([0-9A-Fa-f]{4})>\s*<([0-9A-Fa-f]{4,})>");
+            foreach (Match m in matches)
+            {
+                int src = Convert.ToInt32(m.Groups[1].Value, 16);
+                string hexDst = m.Groups[2].Value;
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < hexDst.Length; i += 4)
+                {
+                    int code = Convert.ToInt32(hexDst.Substring(i, 4), 16);
+                    sb.Append((char)code);
+                }
+                map[src] = sb.ToString();
+            }
+            return map;
+        }
+
+        static double[] Concat(double[] m, double[] ctm)
+        {
+            return new double[]
+            {
+                m[0]*ctm[0] + m[1]*ctm[2],
+                m[0]*ctm[1] + m[1]*ctm[3],
+                m[2]*ctm[0] + m[3]*ctm[2],
+                m[2]*ctm[1] + m[3]*ctm[3],
+                m[4]*ctm[0] + m[5]*ctm[2] + ctm[4],
+                m[4]*ctm[1] + m[5]*ctm[3] + ctm[5]
+            };
+        }
+
+        public static List<TextChunk> ExtractChunks(string content, Dictionary<int, string> cmap)
+        {
+            var chunks = new List<TextChunk>();
+            var stateStack = new Stack<double[]>();
+            double[] ctm = new double[] { 1, 0, 0, 1, 0, 0 };
+            double[] textMatrix = new double[] { 1, 0, 0, 1, 0, 0 };
+
+            var regex = new Regex(@"(\[[\s\S]*?\])\s*TJ|(\([^\)]*\)|<[0-9A-Fa-f]+>)\s*Tj|([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+cm|([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+Tm|([-0-9.]+)\s+([-0-9.]+)\s+Td|\b(q|Q|BT|ET)\b");
+
+            var matches = regex.Matches(content);
+            foreach (Match m in matches)
+            {
+                string op = m.Value;
+                if (m.Groups[17].Success)
+                {
+                    string cmd = m.Groups[17].Value;
+                    if (cmd == "q") stateStack.Push((double[])ctm.Clone());
+                    else if (cmd == "Q" && stateStack.Count > 0) ctm = stateStack.Pop();
+                    else if (cmd == "BT") textMatrix = new double[] { 1, 0, 0, 1, 0, 0 };
+                }
+                else if (m.Groups[3].Success && op.EndsWith("cm"))
+                {
+                    double a = double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+                    double b = double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
+                    double c = double.Parse(m.Groups[5].Value, CultureInfo.InvariantCulture);
+                    double d = double.Parse(m.Groups[6].Value, CultureInfo.InvariantCulture);
+                    double e = double.Parse(m.Groups[7].Value, CultureInfo.InvariantCulture);
+                    double f = double.Parse(m.Groups[8].Value, CultureInfo.InvariantCulture);
+                    ctm = Concat(new double[] { a, b, c, d, e, f }, ctm);
+                }
+                else if (m.Groups[9].Success && op.EndsWith("Tm"))
+                {
+                    double a = double.Parse(m.Groups[9].Value, CultureInfo.InvariantCulture);
+                    double b = double.Parse(m.Groups[10].Value, CultureInfo.InvariantCulture);
+                    double c = double.Parse(m.Groups[11].Value, CultureInfo.InvariantCulture);
+                    double d = double.Parse(m.Groups[12].Value, CultureInfo.InvariantCulture);
+                    double e = double.Parse(m.Groups[13].Value, CultureInfo.InvariantCulture);
+                    double f = double.Parse(m.Groups[14].Value, CultureInfo.InvariantCulture);
+                    textMatrix = new double[] { a, b, c, d, e, f };
+                }
+                else if (m.Groups[15].Success && op.EndsWith("Td"))
+                {
+                    double tx = double.Parse(m.Groups[15].Value, CultureInfo.InvariantCulture);
+                    double ty = double.Parse(m.Groups[16].Value, CultureInfo.InvariantCulture);
+                    textMatrix = Concat(new double[] { 1, 0, 0, 1, tx, ty }, textMatrix);
+                }
+                else if (m.Groups[1].Success || m.Groups[2].Success)
+                {
+                    double[] eff = Concat(textMatrix, ctm);
+                    double absX = eff[4];
+                    double absY = eff[5];
+                    string text = DecodeText(m.Value, cmap);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        chunks.Add(new TextChunk { X = Math.Round(absX, 1), Y = Math.Round(absY, 1), Text = text.Trim() });
+                    }
+                }
+            }
+            return chunks;
+        }
+
+        static string DecodeText(string chunk, Dictionary<int, string> cmap)
+        {
+            StringBuilder full = new StringBuilder();
+            var tokens = Regex.Matches(chunk, @"<([0-9A-Fa-f]+)>|\(([\s\S]*?)\)");
+            foreach (Match t in tokens)
+            {
+                if (t.Groups[1].Success)
+                {
+                    string hex = t.Groups[1].Value;
+                    for (int h = 0; h < hex.Length; h += 4)
+                    {
+                        if (h + 4 <= hex.Length)
+                        {
+                            int cid = Convert.ToInt32(hex.Substring(h, 4), 16);
+                            if (cmap != null && cmap.ContainsKey(cid)) full.Append(cmap[cid]);
+                        }
+                    }
+                }
+                else if (t.Groups[2].Success)
+                {
+                    full.Append(t.Groups[2].Value);
+                }
+            }
+            return full.ToString();
+        }
+
+        public static List<TableSheet> ExtractWorkbook(string pdfPath)
+        {
+            var sheets = new List<TableSheet>();
+            byte[] bytes = File.ReadAllBytes(pdfPath);
+            string raw = Encoding.ASCII.GetString(bytes);
+
+            var contentRefs = Regex.Matches(raw, @"/Contents\s+(\d+)\s+0\s+R");
+            var toUnicodeRefs = Regex.Matches(raw, @"/ToUnicode\s+(\d+)\s+0\s+R");
+
+            int pageCount = contentRefs.Count;
+            for (int p = 0; p < pageCount; p++)
+            {
+                int contentObjId = int.Parse(contentRefs[p].Groups[1].Value);
+                int cmapObjId = (p < toUnicodeRefs.Count) ? int.Parse(toUnicodeRefs[p].Groups[1].Value) : -1;
+
+                Dictionary<int, string> cmap = null;
+                if (cmapObjId > 0)
+                {
+                    string cmapStr = GetStreamString(bytes, raw, cmapObjId);
+                    if (!string.IsNullOrEmpty(cmapStr)) cmap = ParseCMap(cmapStr);
+                }
+
+                string content = GetStreamString(bytes, raw, contentObjId);
+                if (string.IsNullOrEmpty(content)) continue;
+
+                var chunks = ExtractChunks(content, cmap);
+                var sheet = ParsePageIntoSheet(chunks, p + 1);
+                sheets.Add(sheet);
+            }
+
+            return sheets;
+        }
+
+        public static TableSheet ParsePageIntoSheet(List<TextChunk> chunks, int pageIndex)
+        {
+            var sheet = new TableSheet();
+            if (chunks.Count == 0) return sheet;
+
+            chunks.Sort((a, b) => b.Y.CompareTo(a.Y));
+
+            string detectedTitle = "";
+            foreach (var c in chunks)
+            {
+                if (c.Y > 770)
+                {
+                    if (c.Text.Contains("资产负债表")) { detectedTitle = "资产负债表"; break; }
+                    if (c.Text.Contains("利润表")) { detectedTitle = "利润表"; break; }
+                    if (c.Text.Contains("现金流量表")) { detectedTitle = "现金流量表"; break; }
+                }
+            }
+            if (string.IsNullOrEmpty(detectedTitle)) detectedTitle = "第" + pageIndex + "页报表";
+            sheet.Title = detectedTitle;
+
+            bool isBalanceSheet = false;
+            double headerY = -1;
+
+            foreach (var c in chunks)
+            {
+                if (c.Text.Contains("资产") && c.X < 150)
+                {
+                    foreach (var c2 in chunks)
+                    {
+                        if (c2.Text.Contains("负债") && Math.Abs(c2.Y - c.Y) < 5)
+                        {
+                            isBalanceSheet = true;
+                            headerY = c.Y;
+                            break;
+                        }
+                    }
+                    if (isBalanceSheet) break;
+                }
+                else if (c.Text == "项目" && headerY < 0)
+                {
+                    headerY = c.Y;
+                }
+            }
+
+            double[] colBounds;
+            if (isBalanceSheet)
+            {
+                sheet.Headers = new List<string> { "资产", "行次", "期末余额", "年初余额", "负债及所有者权益", "行次", "期末余额", "年初余额" };
+                colBounds = new double[] { 160, 190, 250, 300, 425, 455, 515 };
+            }
+            else
+            {
+                sheet.Headers = new List<string> { "项目", "行次", "本年累计金额", "上年金额" };
+                colBounds = new double[] { 320, 370, 470 };
+            }
+
+            var bodyChunks = new List<TextChunk>();
+            foreach (var c in chunks)
+            {
+                if (headerY > 0 && c.Y < headerY - 2 && c.Y > 20)
+                {
+                    bodyChunks.Add(c);
+                }
+            }
+
+            bodyChunks.Sort((a, b) => b.Y.CompareTo(a.Y));
+            var rowGroups = new List<List<TextChunk>>();
+            List<TextChunk> curRow = null;
+            double curY = -999;
+
+            foreach (var c in bodyChunks)
+            {
+                if (curRow == null || Math.Abs(c.Y - curY) > 4.5)
+                {
+                    curRow = new List<TextChunk>();
+                    rowGroups.Add(curRow);
+                    curY = c.Y;
+                }
+                curRow.Add(c);
+            }
+
+            int colCount = sheet.Headers.Count;
+            foreach (var rg in rowGroups)
+            {
+                var rowCells = new List<TableCell>();
+                for (int i = 0; i < colCount; i++) rowCells.Add(new TableCell());
+
+                foreach (var ch in rg)
+                {
+                    int colIdx = 0;
+                    while (colIdx < colBounds.Length && ch.X >= colBounds[colIdx])
+                    {
+                        colIdx++;
+                    }
+                    if (colIdx < colCount)
+                    {
+                        if (string.IsNullOrEmpty(rowCells[colIdx].Text)) rowCells[colIdx].Text = ch.Text;
+                        else rowCells[colIdx].Text += " " + ch.Text;
+                    }
+                }
+
+                bool hasContent = false;
+                for (int i = 0; i < colCount; i++)
+                {
+                    string val = rowCells[i].Text.Trim();
+                    if (!string.IsNullOrEmpty(val)) hasContent = true;
+
+                    double num;
+                    string clean = val.Replace(",", "");
+                    if (double.TryParse(clean, NumberStyles.Float, CultureInfo.InvariantCulture, out num) &&
+                        (val.Contains(".") || val == "0" || (val.Length > 2 && !val.StartsWith("0"))))
+                    {
+                        rowCells[i].IsNumeric = true;
+                        rowCells[i].NumericValue = num;
+                    }
+                }
+
+                if (hasContent) sheet.Rows.Add(rowCells);
+            }
+
+            return sheet;
+        }
+
+        static string GetStreamString(byte[] bytes, string raw, int objId)
+        {
+            string pattern = objId + @"\s+0\s+obj[\s\S]*?stream\r?\n";
+            Match m = Regex.Match(raw, pattern);
+            if (!m.Success) return null;
+            int streamStart = m.Index + m.Length;
+            int endstreamPos = raw.IndexOf("endstream", streamStart);
+            if (endstreamPos <= streamStart) return null;
+            byte[] streamBytes = new byte[endstreamPos - streamStart];
+            Buffer.BlockCopy(bytes, streamStart, streamBytes, 0, streamBytes.Length);
+            byte[] decomp = DecompressZlib(streamBytes);
+            return (decomp != null) ? Encoding.UTF8.GetString(decomp) : null;
+        }
+    }
+
+    public class ExcelBuilder
+    {
+        static string EscapeXml(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
+        }
+
+        public static byte[] GenerateXlsx(List<TableSheet> sheets)
+        {
+            var files = new Dictionary<string, byte[]>();
+
+            var sbTypes = new StringBuilder();
+            sbTypes.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+            sbTypes.AppendLine("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">");
+            sbTypes.AppendLine("  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>");
+            sbTypes.AppendLine("  <Default Extension=\"xml\" ContentType=\"application/xml\"/>");
+            sbTypes.AppendLine("  <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>");
+            sbTypes.AppendLine("  <Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>");
+            for (int i = 0; i < sheets.Count; i++)
+            {
+                sbTypes.AppendLine(string.Format("  <Override PartName=\"/xl/worksheets/sheet{0}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>", i + 1));
+            }
+            sbTypes.AppendLine("</Types>");
+            files["[Content_Types].xml"] = Encoding.UTF8.GetBytes(sbTypes.ToString());
+
+            files["_rels/.rels"] = Encoding.UTF8.GetBytes(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n" +
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\r\n" +
+                "  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>\r\n" +
+                "</Relationships>");
+
+            var sbWbRels = new StringBuilder();
+            sbWbRels.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+            sbWbRels.AppendLine("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
+            for (int i = 0; i < sheets.Count; i++)
+            {
+                sbWbRels.AppendLine(string.Format("  <Relationship Id=\"rId{0}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{0}.xml\"/>", i + 1));
+            }
+            sbWbRels.AppendLine(string.Format("  <Relationship Id=\"rId{0}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>", sheets.Count + 1));
+            sbWbRels.AppendLine("</Relationships>");
+            files["xl/_rels/workbook.xml.rels"] = Encoding.UTF8.GetBytes(sbWbRels.ToString());
+
+            var sbWb = new StringBuilder();
+            sbWb.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+            sbWb.AppendLine("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">");
+            sbWb.AppendLine("  <sheets>");
+            for (int i = 0; i < sheets.Count; i++)
+            {
+                string sName = sheets[i].Title;
+                if (string.IsNullOrEmpty(sName)) sName = "Sheet" + (i + 1);
+                sbWb.AppendLine(string.Format("    <sheet name=\"{0}\" sheetId=\"{1}\" r:id=\"rId{1}\"/>", EscapeXml(sName), i + 1));
+            }
+            sbWb.AppendLine("  </sheets>");
+            sbWb.AppendLine("</workbook>");
+            files["xl/workbook.xml"] = Encoding.UTF8.GetBytes(sbWb.ToString());
+
+            files["xl/styles.xml"] = Encoding.UTF8.GetBytes(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n" +
+                "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\r\n" +
+                "  <numFmts count=\"1\">\r\n" +
+                "    <numFmt numFmtId=\"164\" formatCode=\"#,##0.00;[Red]-#,##0.00;0.00\"/>\r\n" +
+                "  </numFmts>\r\n" +
+                "  <fonts count=\"2\">\r\n" +
+                "    <font><name val=\"Microsoft YaHei\"/><sz val=\"10\"/></font>\r\n" +
+                "    <font><b/><name val=\"Microsoft YaHei\"/><sz val=\"11\"/></font>\r\n" +
+                "  </fonts>\r\n" +
+                "  <fills count=\"3\">\r\n" +
+                "    <fill><patternFill patternType=\"none\"/></fill>\r\n" +
+                "    <fill><patternFill patternType=\"gray125\"/></fill>\r\n" +
+                "    <fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF0F4F8\"/></patternFill></fill>\r\n" +
+                "  </fills>\r\n" +
+                "  <borders count=\"2\">\r\n" +
+                "    <border><left/><right/><top/><bottom/></border>\r\n" +
+                "    <border><left style=\"thin\"><color rgb=\"FFD0D0D0\"/></left><right style=\"thin\"><color rgb=\"FFD0D0D0\"/></right><top style=\"thin\"><color rgb=\"FFD0D0D0\"/></top><bottom style=\"thin\"><color rgb=\"FFD0D0D0\"/></bottom></border>\r\n" +
+                "  </borders>\r\n" +
+                "  <cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\r\n" +
+                "  <cellXfs count=\"3\">\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyBorder=\"1\"/>\r\n" +
+                "    <xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>\r\n" +
+                "    <xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyBorder=\"1\"/>\r\n" +
+                "  </cellXfs>\r\n" +
+                "</styleSheet>");
+
+            for (int sIdx = 0; sIdx < sheets.Count; sIdx++)
+            {
+                var sheet = sheets[sIdx];
+                var sbWs = new StringBuilder();
+                sbWs.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+                sbWs.AppendLine("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
+                sbWs.AppendLine("  <sheetData>");
+
+                int r = 1;
+                if (sheet.Headers.Count > 0)
+                {
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\">", r));
+                    for (int c = 0; c < sheet.Headers.Count; c++)
+                    {
+                        string colLetter = GetColName(c + 1);
+                        sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"1\" t=\"inlineStr\"><is><t>{2}</t></is></c>", colLetter, r, EscapeXml(sheet.Headers[c])));
+                    }
+                    sbWs.AppendLine("    </row>");
+                    r++;
+                }
+
+                for (int rIdx = 0; rIdx < sheet.Rows.Count; rIdx++)
+                {
+                    var row = sheet.Rows[rIdx];
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\">", r));
+                    for (int cIdx = 0; cIdx < row.Count; cIdx++)
+                    {
+                        string colLetter = GetColName(cIdx + 1);
+                        var cell = row[cIdx];
+                        int style = cell.IsNumeric ? 2 : 0;
+
+                        if (cell.IsNumeric)
+                        {
+                            sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"{2}\"><v>{3}</v></c>", colLetter, r, style, cell.NumericValue.ToString(CultureInfo.InvariantCulture)));
+                        }
+                        else
+                        {
+                            sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"{2}\" t=\"inlineStr\"><is><t>{3}</t></is></c>", colLetter, r, style, EscapeXml(cell.Text)));
+                        }
+                    }
+                    sbWs.AppendLine("    </row>");
+                    r++;
+                }
+
+                sbWs.AppendLine("  </sheetData>");
+                sbWs.AppendLine("</worksheet>");
+                files[string.Format("xl/worksheets/sheet{0}.xml", sIdx + 1)] = Encoding.UTF8.GetBytes(sbWs.ToString());
+            }
+
+            return SimpleZipWriter.CreateZip(files);
+        }
+
+        static string GetColName(int col)
+        {
+            string res = "";
+            while (col > 0)
+            {
+                col--;
+                res = (char)('A' + (col % 26)) + res;
+                col /= 26;
+            }
+            return res;
+        }
+    }
+
+    public class ExcelSheetData
+    {
+        public string Name;
+        public List<List<string>> Rows = new List<List<string>>();
+    }
+
+    public class ExcelReader
+    {
+        public static List<ExcelSheetData> ReadCsv(string filePath)
+        {
+            var list = new List<ExcelSheetData>();
+            var sheet = new ExcelSheetData { Name = Path.GetFileNameWithoutExtension(filePath) };
+            string[] lines = File.ReadAllLines(filePath, Encoding.UTF8);
+            foreach (var line in lines)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var cells = new List<string>();
+                bool inQuotes = false;
+                StringBuilder cur = new StringBuilder();
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char ch = line[i];
+                    if (ch == '\"')
+                    {
+                        inQuotes = !inQuotes;
+                    }
+                    else if (ch == ',' && !inQuotes)
+                    {
+                        cells.Add(cur.ToString().Trim());
+                        cur.Length = 0;
+                    }
+                    else
+                    {
+                        cur.Append(ch);
+                    }
+                }
+                cells.Add(cur.ToString().Trim());
+                sheet.Rows.Add(cells);
+            }
+            list.Add(sheet);
+            return list;
+        }
+
+        public static List<ExcelSheetData> ReadXlsx(string filePath)
+        {
+            byte[] bytes = File.ReadAllBytes(filePath);
+            var entries = SimpleZipReader.ReadZip(bytes);
+            var sheets = new List<ExcelSheetData>();
+
+            var sharedStrings = new List<string>();
+            if (entries.ContainsKey("xl/sharedStrings.xml"))
+            {
+                string sstXml = Encoding.UTF8.GetString(entries["xl/sharedStrings.xml"]);
+                var siMatches = Regex.Matches(sstXml, @"<si>([\s\S]*?)</si>");
+                foreach (Match si in siMatches)
+                {
+                    var tMatches = Regex.Matches(si.Value, @"<t[^>]*>([\s\S]*?)</t>");
+                    StringBuilder sb = new StringBuilder();
+                    foreach (Match t in tMatches) sb.Append(t.Groups[1].Value);
+                    sharedStrings.Add(System.Net.WebUtility.HtmlDecode(sb.ToString()));
+                }
+            }
+
+            if (!entries.ContainsKey("xl/workbook.xml")) return sheets;
+            string wbXml = Encoding.UTF8.GetString(entries["xl/workbook.xml"]);
+
+            var sheetMatches = Regex.Matches(wbXml, @"<sheet[^>]+name=""([^""]+)""[^>]+r:id=""([^""]+)""");
+            if (sheetMatches.Count == 0)
+            {
+                sheetMatches = Regex.Matches(wbXml, @"<sheet[^>]+r:id=""([^""]+)""[^>]+name=""([^""]+)""");
+            }
+
+            var rels = new Dictionary<string, string>();
+            if (entries.ContainsKey("xl/_rels/workbook.xml.rels"))
+            {
+                string relsXml = Encoding.UTF8.GetString(entries["xl/_rels/workbook.xml.rels"]);
+                var rMatches = Regex.Matches(relsXml, @"<Relationship[^>]+Id=""([^""]+)""[^>]+Target=""([^""]+)""");
+                foreach (Match rm in rMatches)
+                {
+                    rels[rm.Groups[1].Value] = rm.Groups[2].Value.Replace('\\', '/');
+                }
+            }
+
+            for (int i = 0; i < sheetMatches.Count; i++)
+            {
+                Match m = sheetMatches[i];
+                string sheetName = m.Groups[1].Value;
+                string rId = m.Groups[2].Value;
+                if (rId.StartsWith("rId") == false && sheetName.StartsWith("rId"))
+                {
+                    string tmp = sheetName; sheetName = rId; rId = tmp;
+                }
+
+                string target = "worksheets/sheet" + (i + 1) + ".xml";
+                if (rels.ContainsKey(rId)) target = rels[rId];
+                if (!target.StartsWith("xl/")) target = "xl/" + target.TrimStart('/');
+
+                if (!entries.ContainsKey(target)) continue;
+
+                string wsXml = Encoding.UTF8.GetString(entries[target]);
+                var sheetData = new ExcelSheetData { Name = sheetName };
+
+                var rowMatches = Regex.Matches(wsXml, @"<row[^>]*>([\s\S]*?)</row>");
+                foreach (Match rowM in rowMatches)
+                {
+                    var rowList = new List<string>();
+                    var cellMatches = Regex.Matches(rowM.Value, @"<c\s+r=""([A-Z]+)(\d+)""([^>]*)>([\s\S]*?)</c>");
+                    int curCol = 0;
+                    foreach (Match cm in cellMatches)
+                    {
+                        string colLetters = cm.Groups[1].Value;
+                        int targetCol = ColNameToIndex(colLetters);
+                        while (curCol < targetCol)
+                        {
+                            rowList.Add("");
+                            curCol++;
+                        }
+
+                        string attrs = cm.Groups[3].Value;
+                        string inner = cm.Groups[4].Value;
+
+                        string val = "";
+                        if (attrs.Contains("t=\"s\""))
+                        {
+                            var vm = Regex.Match(inner, @"<v>(\d+)</v>");
+                            if (vm.Success)
+                            {
+                                int sIdx = int.Parse(vm.Groups[1].Value);
+                                if (sIdx >= 0 && sIdx < sharedStrings.Count) val = sharedStrings[sIdx];
+                            }
+                        }
+                        else if (attrs.Contains("t=\"inlineStr\""))
+                        {
+                            var tm = Regex.Match(inner, @"<t[^>]*>([\s\S]*?)</t>");
+                            if (tm.Success) val = System.Net.WebUtility.HtmlDecode(tm.Groups[1].Value);
+                        }
+                        else
+                        {
+                            var vm = Regex.Match(inner, @"<v>([\s\S]*?)</v>");
+                            if (vm.Success) val = vm.Groups[1].Value;
+                        }
+
+                        rowList.Add(val);
+                        curCol++;
+                    }
+
+                    if (rowList.Count > 0)
+                    {
+                        sheetData.Rows.Add(rowList);
+                    }
+                }
+
+                sheets.Add(sheetData);
+            }
+
+            return sheets;
+        }
+
+        static int ColNameToIndex(string col)
+        {
+            int res = 0;
+            for (int i = 0; i < col.Length; i++)
+            {
+                res = res * 26 + (col[i] - 'A' + 1);
+            }
+            return res - 1;
+        }
+    }
+
+    public class ExcelToPdfRenderer
+    {
+        public static List<Bitmap> RenderSheetToBitmaps(ExcelSheetData sheet, int orientationMode = 0, int themeMode = 0, bool printFooter = true)
+        {
+            var bitmaps = new List<Bitmap>();
+            if (sheet.Rows.Count == 0) return bitmaps;
+
+            int maxCols = 0;
+            foreach (var r in sheet.Rows) maxCols = Math.Max(maxCols, r.Count);
+            if (maxCols == 0) return bitmaps;
+
+            bool isLandscape;
+            if (orientationMode == 1) isLandscape = true;
+            else if (orientationMode == 2) isLandscape = false;
+            else isLandscape = maxCols > 5;
+
+            int pageWidth = isLandscape ? 2338 : 1654;
+            int pageHeight = isLandscape ? 1654 : 2338;
+            int marginX = 80;
+            int marginTop = 100;
+            int marginBottom = 90;
+            int printableWidth = pageWidth - marginX * 2;
+
+            float[] colWeights = new float[maxCols];
+            for (int c = 0; c < maxCols; c++) colWeights[c] = 5f;
+
+            foreach (var r in sheet.Rows)
+            {
+                for (int c = 0; c < r.Count; c++)
+                {
+                    string text = r[c];
+                    float len = text.Length;
+                    if (len > colWeights[c]) colWeights[c] = Math.Min(45f, len);
+                }
+            }
+
+            float totalWeight = 0;
+            for (int c = 0; c < maxCols; c++) totalWeight += colWeights[c];
+
+            float[] colWidths = new float[maxCols];
+            for (int c = 0; c < maxCols; c++)
+            {
+                colWidths[c] = (colWeights[c] / totalWeight) * printableWidth;
+            }
+
+            int rowHeight = 44;
+            int headerHeight = 52;
+            int rowsPerPage = (pageHeight - marginTop - marginBottom - 120) / rowHeight;
+            if (rowsPerPage < 10) rowsPerPage = 10;
+
+            int totalPages = (int)Math.Ceiling((double)sheet.Rows.Count / rowsPerPage);
+
+            // Theme colors
+            Color hdrBgColor = Color.FromArgb(240, 244, 250);
+            Color zebraColor = Color.FromArgb(248, 250, 254);
+            Color gridColor = Color.FromArgb(210, 215, 225);
+            Color thickColor = Color.FromArgb(70, 95, 140);
+            Color titleColor = Color.FromArgb(20, 35, 60);
+
+            if (themeMode == 1) // Black & white
+            {
+                hdrBgColor = Color.FromArgb(235, 235, 235);
+                zebraColor = Color.White;
+                gridColor = Color.FromArgb(180, 180, 180);
+                thickColor = Color.Black;
+                titleColor = Color.Black;
+            }
+            else if (themeMode == 2) // Modern Gray
+            {
+                hdrBgColor = Color.FromArgb(243, 244, 246);
+                zebraColor = Color.FromArgb(249, 250, 251);
+                gridColor = Color.FromArgb(229, 231, 235);
+                thickColor = Color.FromArgb(107, 114, 128);
+                titleColor = Color.FromArgb(31, 41, 55);
+            }
+
+            for (int p = 0; p < totalPages; p++)
+            {
+                Bitmap bmp = new Bitmap(pageWidth, pageHeight, PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(Color.White);
+                    g.SmoothingMode = SmoothingMode.HighQuality;
+                    g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+                    using (Font fontTitle = new Font("Microsoft YaHei", 18, FontStyle.Bold))
+                    using (Font fontHeader = new Font("Microsoft YaHei", 10.5f, FontStyle.Bold))
+                    using (Font fontBody = new Font("Microsoft YaHei", 9.5f, FontStyle.Regular))
+                    using (Font fontFooter = new Font("Microsoft YaHei", 8.5f, FontStyle.Regular))
+                    using (Brush brushTitle = new SolidBrush(titleColor))
+                    using (Brush brushText = new SolidBrush(Color.FromArgb(40, 40, 40)))
+                    using (Brush brushFooter = new SolidBrush(Color.FromArgb(140, 140, 140)))
+                    using (Pen penGrid = new Pen(gridColor, 1.2f))
+                    using (Pen penThick = new Pen(thickColor, 2f))
+                    using (Brush brushHdrBg = new SolidBrush(hdrBgColor))
+                    using (Brush brushZebra = new SolidBrush(zebraColor))
+                    {
+                        string title = sheet.Name;
+                        g.DrawString(title, fontTitle, brushTitle, marginX, 40);
+
+                        float curY = marginTop;
+                        int startRow = p * rowsPerPage;
+                        int endRow = Math.Min(sheet.Rows.Count, (p + 1) * rowsPerPage);
+
+                        for (int rIdx = startRow; rIdx < endRow; rIdx++)
+                        {
+                            var row = sheet.Rows[rIdx];
+                            bool isHdr = (rIdx == 0);
+                            float rH = isHdr ? headerHeight : rowHeight;
+
+                            if (isHdr)
+                            {
+                                g.FillRectangle(brushHdrBg, marginX, curY, printableWidth, rH);
+                            }
+                            else if (rIdx % 2 == 1)
+                            {
+                                g.FillRectangle(brushZebra, marginX, curY, printableWidth, rH);
+                            }
+
+                            float curX = marginX;
+                            for (int c = 0; c < maxCols; c++)
+                            {
+                                string text = (c < row.Count) ? row[c] : "";
+                                Font f = isHdr ? fontHeader : fontBody;
+
+                                double dummy;
+                                bool isNum = double.TryParse(text.Replace(",", ""), out dummy);
+
+                                var sf = new StringFormat
+                                {
+                                    Alignment = isNum ? StringAlignment.Far : StringAlignment.Near,
+                                    LineAlignment = StringAlignment.Center,
+                                    Trimming = StringTrimming.EllipsisCharacter
+                                };
+
+                                var cellRect = new RectangleF(curX + 6, curY + 2, colWidths[c] - 12, rH - 4);
+                                g.DrawString(text, f, brushText, cellRect, sf);
+
+                                g.DrawLine(penGrid, curX, curY, curX, curY + rH);
+                                curX += colWidths[c];
+                            }
+                            g.DrawLine(penGrid, curX, curY, curX, curY + rH);
+
+                            g.DrawLine(isHdr ? penThick : penGrid, marginX, curY + rH, marginX + printableWidth, curY + rH);
+                            curY += rH;
+                        }
+
+                        g.DrawLine(penThick, marginX, marginTop, marginX + printableWidth, marginTop);
+
+                        if (printFooter)
+                        {
+                            string footer = string.Format("工作表：{0}    第 {1} / {2} 页", sheet.Name, p + 1, totalPages);
+                            var sfFooter = new StringFormat { Alignment = StringAlignment.Center };
+                            g.DrawString(footer, fontFooter, brushFooter, pageWidth / 2, pageHeight - 55, sfFooter);
+                        }
+                    }
+                }
+                bitmaps.Add(bmp);
+            }
+
+            return bitmaps;
+        }
+    }
+
+    public static class PdfBuilder
+    {
+        public static void BuildPdfFromBitmaps(List<Bitmap> images, string outputPath)
+        {
+            if (images == null || images.Count == 0) return;
+
+            using (var fs = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
+            using (var sw = new StreamWriter(fs, Encoding.ASCII))
+            {
+                var offsets = new List<long>();
+                sw.Write("%PDF-1.4\r\n");
+                sw.Flush();
+
+                int count = images.Count;
+                offsets.Add(fs.Position);
+                sw.Write("1 0 obj\r\n<< /Type /Catalog /Pages 2 0 R >>\r\nendobj\r\n");
+                sw.Flush();
+
+                offsets.Add(fs.Position);
+                StringBuilder kids = new StringBuilder();
+                for (int i = 0; i < count; i++)
+                {
+                    kids.Append(string.Format("{0} 0 R ", 3 + i * 3));
+                }
+                sw.Write(string.Format("2 0 obj\r\n<< /Type /Pages /Kids [{0}] /Count {1} >>\r\nendobj\r\n", kids.ToString(), count));
+                sw.Flush();
+
+                for (int i = 0; i < count; i++)
+                {
+                    Bitmap bmp = images[i];
+                    int pageObj = 3 + i * 3;
+                    int contentObj = pageObj + 1;
+                    int imageObj = pageObj + 2;
+
+                    float ptWidth = (float)(bmp.Width * 72.0 / 200.0);
+                    float ptHeight = (float)(bmp.Height * 72.0 / 200.0);
+
+                    offsets.Add(fs.Position);
+                    sw.Write(string.Format("{0} 0 obj\r\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {1:F2} {2:F2}] /Contents {3} 0 R /Resources << /XObject << /Im{4} {5} 0 R >> >> >>\r\nendobj\r\n",
+                        pageObj, ptWidth, ptHeight, contentObj, i, imageObj));
+                    sw.Flush();
+
+                    string contentStream = string.Format("q\r\n{0:F2} 0 0 {1:F2} 0 0 cm\r\n/Im{2} Do\r\nQ\r\n", ptWidth, ptHeight, i);
+                    byte[] contentBytes = Encoding.ASCII.GetBytes(contentStream);
+
+                    offsets.Add(fs.Position);
+                    sw.Write(string.Format("{0} 0 obj\r\n<< /Length {1} >>\r\nstream\r\n", contentObj, contentBytes.Length));
+                    sw.Flush();
+                    fs.Write(contentBytes, 0, contentBytes.Length);
+                    sw.Write("\r\nendstream\r\nendobj\r\n");
+                    sw.Flush();
+
+                    byte[] jpegBytes;
+                    using (var ms = new MemoryStream())
+                    {
+                        ImageCodecInfo jpgEncoder = GetEncoder(ImageFormat.Jpeg);
+                        var myEncoderParameters = new EncoderParameters(1);
+                        myEncoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+                        bmp.Save(ms, jpgEncoder, myEncoderParameters);
+                        jpegBytes = ms.ToArray();
+                    }
+
+                    offsets.Add(fs.Position);
+                    sw.Write(string.Format("{0} 0 obj\r\n<< /Type /XObject /Subtype /Image /Width {1} /Height {2} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {3} >>\r\nstream\r\n",
+                        imageObj, bmp.Width, bmp.Height, jpegBytes.Length));
+                    sw.Flush();
+                    fs.Write(jpegBytes, 0, jpegBytes.Length);
+                    sw.Write("\r\nendstream\r\nendobj\r\n");
+                    sw.Flush();
+                }
+
+                long xrefPos = fs.Position;
+                sw.Write(string.Format("xref\r\n0 {0}\r\n0000000000 65535 f \r\n", offsets.Count + 1));
+                for (int i = 0; i < offsets.Count; i++)
+                {
+                    sw.Write(string.Format("{0:D10} 00000 n \r\n", offsets[i]));
+                }
+                sw.Write(string.Format("trailer\r\n<< /Size {0} /Root 1 0 R >>\r\nstartxref\r\n{1}\r\n%%EOF\r\n", offsets.Count + 1, xrefPos));
+                sw.Flush();
+            }
+        }
+
+        static ImageCodecInfo GetEncoder(ImageFormat format)
+        {
+            ImageCodecInfo[] codecs = ImageCodecInfo.GetImageDecoders();
+            foreach (ImageCodecInfo codec in codecs)
+            {
+                if (codec.FormatID == format.Guid) return codec;
+            }
+            return null;
+        }
+    }
+
 }
