@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -2394,7 +2394,7 @@ namespace FinancePdfApp
             dgvPdfExcel.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold);
             dgvPdfExcel.ColumnHeadersHeight = 32;
             dgvPdfExcel.EnableHeadersVisualStyles = false;
-            dgvPdfExcel.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(248, 250, 254);
+            dgvPdfExcel.AlternatingRowsDefaultCellStyle.BackColor = Color.White;
             dgvPdfExcel.DefaultCellStyle.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
             dgvPdfExcel.DefaultCellStyle.ForeColor = Color.FromArgb(51, 65, 85);
             dgvPdfExcel.RowTemplate.Height = 28;
@@ -2557,6 +2557,18 @@ namespace FinancePdfApp
             if (string.IsNullOrEmpty(outPath))
             {
                 MessageBox.Show("请指定导出文件的保存路径！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 免责声明与核对提示
+            string disclaimer = "【免责声明与核对提示】\n\n" +
+                                "1. 本工具导出的表格数据由程序算法自动从 PDF 中提取并转换生成。\n\n" +
+                                "2. 受 PDF 原始生成规范、版面排版错位及字体编码差异等客观因素影响，本程序无法保证提取转换结果 100% 绝对准确！\n\n" +
+                                "3. 导出的 Excel 报表数据仅供填报参考与辅助录入。在正式用于税务申报、财务审计、商务往来等任何正式场合前，请务必进行人工仔细核对与校验！\n\n" +
+                                "是否确认已知晓免责提示并继续导出？";
+
+            if (MessageBox.Show(disclaimer, "免责声明与核对提示", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button1) != DialogResult.Yes)
+            {
                 return;
             }
 
@@ -4947,50 +4959,11 @@ namespace DynamicWinRt
                     rowNum++;
                 }
 
-                // Table Data Rows
-                bool is8Col = (sheet.Headers.Count >= 8 || maxCols >= 8);
-
+                // Table Data Rows（财务标准规范：内容区不着色、不加粗，保持统一白底黑字与整洁边框）
                 for (int rIdx = 0; rIdx < sheet.Rows.Count; rIdx++)
                 {
                     var row = sheet.Rows[rIdx];
-                    bool isEvenRow = (rIdx % 2 == 1);
-
-                    // Check if summary row
-                    bool isGrandTotal = false;
-                    bool leftIsSubtotal = false;
-                    bool rightIsSubtotal = false;
-
-                    string c0 = (row.Count > 0) ? row[0].Text.Trim() : "";
-                    string c4 = (row.Count > 4) ? row[4].Text.Trim() : "";
-
-                    if (is8Col)
-                    {
-                        if (c0.Contains("资产总计") || c4.Contains("负债和所有者权益") || c4.Contains("负债及所有者权益") || c4.Contains("总计"))
-                        {
-                            isGrandTotal = true;
-                        }
-                        else
-                        {
-                            leftIsSubtotal = c0.Contains("合计") || c0.Contains("小计") || c0.EndsWith("：") || c0.EndsWith(":");
-                            rightIsSubtotal = c4.Contains("合计") || c4.Contains("小计") || c4.EndsWith("：") || c4.EndsWith(":");
-                        }
-                    }
-                    else
-                    {
-                        if (c0.Contains("净利润") || c0.Contains("期末现金余额"))
-                        {
-                            isGrandTotal = true;
-                        }
-                        else
-                        {
-                            leftIsSubtotal = c0.Contains("合计") || c0.Contains("小计") ||
-                                             c0.Contains("营业利润") || c0.Contains("利润总额") ||
-                                             c0.Contains("现金净增加额") || c0.EndsWith("：") || c0.EndsWith(":");
-                        }
-                    }
-
-                    int ht = isGrandTotal ? 24 : ((leftIsSubtotal || rightIsSubtotal) ? 22 : 21);
-                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"{1}\" customHeight=\"1\">", rowNum, ht));
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"21\" customHeight=\"1\">", rowNum));
 
                     for (int cIdx = 0; cIdx < row.Count; cIdx++)
                     {
@@ -4999,32 +4972,8 @@ namespace DynamicWinRt
                         string hName = (cIdx < sheet.Headers.Count) ? sheet.Headers[cIdx] : "";
                         bool isLineCol = (hName == "行次");
 
-                        bool cellIsSubtotal = is8Col ? ((cIdx < 4) ? leftIsSubtotal : rightIsSubtotal) : leftIsSubtotal;
-
-                        int style;
-                        if (isGrandTotal)
-                        {
-                            style = cell.IsNumeric ? 11 : (isLineCol ? 12 : 10);
-                        }
-                        else if (cellIsSubtotal)
-                        {
-                            if (isEvenRow)
-                            {
-                                style = cell.IsNumeric ? 22 : (isLineCol ? 23 : 21);
-                            }
-                            else
-                            {
-                                style = cell.IsNumeric ? 19 : (isLineCol ? 20 : 18);
-                            }
-                        }
-                        else if (isEvenRow)
-                        {
-                            style = cell.IsNumeric ? 5 : (isLineCol ? 6 : 4);
-                        }
-                        else
-                        {
-                            style = cell.IsNumeric ? 2 : (isLineCol ? 3 : 0);
-                        }
+                        // 内容统一白底无变色、常规字体不加粗：金额靠右格式化，行次居中，文本靠左
+                        int style = cell.IsNumeric ? 2 : (isLineCol ? 3 : 0);
 
                         if (cell.IsNumeric)
                         {
