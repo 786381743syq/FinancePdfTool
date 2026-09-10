@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -3836,14 +3836,6 @@ namespace DynamicWinRt
     // Supporting Classes for PDF-to-Excel & Excel-to-PDF Conversion
     // =========================================================================
 
-        // =========================================================================
-    // Supporting Classes for PDF-to-Excel & Excel-to-PDF Conversion
-    // =========================================================================
-
-        // =========================================================================
-    // Supporting Classes for PDF-to-Excel & Excel-to-PDF Conversion
-    // =========================================================================
-
     public class SimpleZipWriter
     {
         class ZipEntry
@@ -4084,6 +4076,7 @@ namespace DynamicWinRt
             public double X;
             public double Y;
             public string Text;
+            public int StreamIndex;
         }
 
         public static byte[] DecompressZlib(byte[] input)
@@ -4184,7 +4177,13 @@ namespace DynamicWinRt
                     string text = DecodeText(m.Value, cmap);
                     if (!string.IsNullOrWhiteSpace(text))
                     {
-                        chunks.Add(new TextChunk { X = Math.Round(absX, 1), Y = Math.Round(absY, 1), Text = text.Trim() });
+                        chunks.Add(new TextChunk
+                        {
+                            X = Math.Round(absX, 1),
+                            Y = Math.Round(absY, 1),
+                            Text = text.Trim(),
+                            StreamIndex = chunks.Count
+                        });
                     }
                 }
             }
@@ -4211,7 +4210,16 @@ namespace DynamicWinRt
                 }
                 else if (t.Groups[2].Success)
                 {
-                    full.Append(t.Groups[2].Value);
+                    string raw = t.Groups[2].Value;
+                    foreach (char ch in raw)
+                    {
+                        if (ch == 0x93) full.Append('“');
+                        else if (ch == 0x94) full.Append('”');
+                        else if (ch == 0x91) full.Append('‘');
+                        else if (ch == 0x92) full.Append('’');
+                        else if (ch == 0x96 || ch == 0x97 || ch == 0xad) full.Append('-');
+                        else full.Append(ch);
+                    }
                 }
             }
             return full.ToString();
@@ -4303,7 +4311,7 @@ namespace DynamicWinRt
             else
             {
                 sheet.Headers = new List<string> { "项目", "行次", "本年累计金额", "上年金额" };
-                colBounds = new double[] { 320, 370, 470 };
+                colBounds = new double[] { 320, 380, 490 };
             }
 
             var bodyChunks = new List<TextChunk>();
@@ -4315,7 +4323,12 @@ namespace DynamicWinRt
                 }
             }
 
-            bodyChunks.Sort((a, b) => b.Y.CompareTo(a.Y));
+            bodyChunks.Sort((a, b) => {
+                if (Math.Abs(a.Y - b.Y) > 3.5) return b.Y.CompareTo(a.Y);
+                if (Math.Abs(a.X - b.X) > 5.0) return a.X.CompareTo(b.X);
+                return a.StreamIndex.CompareTo(b.StreamIndex);
+            });
+
             var rowGroups = new List<List<TextChunk>>();
             List<TextChunk> curRow = null;
 
@@ -4334,6 +4347,11 @@ namespace DynamicWinRt
             {
                 var rowCells = new List<TableCell>();
                 for (int i = 0; i < colCount; i++) rowCells.Add(new TableCell());
+
+                rg.Sort((a, b) => {
+                    if (Math.Abs(a.X - b.X) > 5.0) return a.X.CompareTo(b.X);
+                    return a.StreamIndex.CompareTo(b.StreamIndex);
+                });
 
                 foreach (var ch in rg)
                 {
@@ -4355,7 +4373,8 @@ namespace DynamicWinRt
                             char firstChar = ch.Text.Length > 0 ? ch.Text[0] : ' ';
                             bool isCjk = (lastChar >= 0x4e00 && lastChar <= 0x9fa5) || (firstChar >= 0x4e00 && firstChar <= 0x9fa5) ||
                                          lastChar == '（' || firstChar == '）' || lastChar == '(' || firstChar == ')' ||
-                                         lastChar == '、' || firstChar == '、';
+                                         lastChar == '“' || firstChar == '”' || lastChar == '"' || firstChar == '"' ||
+                                         lastChar == '-' || firstChar == '-' || lastChar == '、' || firstChar == '、';
                             rowCells[colIdx].Text += (isCjk ? "" : " ") + ch.Text;
                         }
                     }
@@ -4394,7 +4413,10 @@ namespace DynamicWinRt
             byte[] streamBytes = new byte[endstreamPos - streamStart];
             Buffer.BlockCopy(bytes, streamStart, streamBytes, 0, streamBytes.Length);
             byte[] decomp = DecompressZlib(streamBytes);
-            return (decomp != null) ? Encoding.UTF8.GetString(decomp) : null;
+            if (decomp == null) return null;
+            char[] chars = new char[decomp.Length];
+            for (int i = 0; i < decomp.Length; i++) chars[i] = (char)decomp[i];
+            return new string(chars);
         }
     }
 
