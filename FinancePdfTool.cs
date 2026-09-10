@@ -3836,6 +3836,14 @@ namespace DynamicWinRt
     // Supporting Classes for PDF-to-Excel & Excel-to-PDF Conversion
     // =========================================================================
 
+        // =========================================================================
+    // Supporting Classes for PDF-to-Excel & Excel-to-PDF Conversion
+    // =========================================================================
+
+        // =========================================================================
+    // Supporting Classes for PDF-to-Excel & Excel-to-PDF Conversion
+    // =========================================================================
+
     public class SimpleZipWriter
     {
         class ZipEntry
@@ -4290,7 +4298,7 @@ namespace DynamicWinRt
             if (isBalanceSheet)
             {
                 sheet.Headers = new List<string> { "资产", "行次", "期末余额", "年初余额", "负债及所有者权益", "行次", "期末余额", "年初余额" };
-                colBounds = new double[] { 160, 190, 250, 300, 425, 455, 515 };
+                colBounds = new double[] { 160, 185, 250, 300, 425, 448, 515 };
             }
             else
             {
@@ -4310,15 +4318,13 @@ namespace DynamicWinRt
             bodyChunks.Sort((a, b) => b.Y.CompareTo(a.Y));
             var rowGroups = new List<List<TextChunk>>();
             List<TextChunk> curRow = null;
-            double curY = -999;
 
             foreach (var c in bodyChunks)
             {
-                if (curRow == null || Math.Abs(c.Y - curY) > 4.5)
+                if (curRow == null || (curRow[curRow.Count - 1].Y - c.Y) > 5.8 || (curRow[0].Y - c.Y) > 12.0)
                 {
                     curRow = new List<TextChunk>();
                     rowGroups.Add(curRow);
-                    curY = c.Y;
                 }
                 curRow.Add(c);
             }
@@ -4338,8 +4344,20 @@ namespace DynamicWinRt
                     }
                     if (colIdx < colCount)
                     {
-                        if (string.IsNullOrEmpty(rowCells[colIdx].Text)) rowCells[colIdx].Text = ch.Text;
-                        else rowCells[colIdx].Text += " " + ch.Text;
+                        if (string.IsNullOrEmpty(rowCells[colIdx].Text))
+                        {
+                            rowCells[colIdx].Text = ch.Text;
+                        }
+                        else
+                        {
+                            string prev = rowCells[colIdx].Text;
+                            char lastChar = prev[prev.Length - 1];
+                            char firstChar = ch.Text.Length > 0 ? ch.Text[0] : ' ';
+                            bool isCjk = (lastChar >= 0x4e00 && lastChar <= 0x9fa5) || (firstChar >= 0x4e00 && firstChar <= 0x9fa5) ||
+                                         lastChar == '（' || firstChar == '）' || lastChar == '(' || firstChar == ')' ||
+                                         lastChar == '、' || firstChar == '、';
+                            rowCells[colIdx].Text += (isCjk ? "" : " ") + ch.Text;
+                        }
                     }
                 }
 
@@ -4470,25 +4488,86 @@ namespace DynamicWinRt
                 var sbWs = new StringBuilder();
                 sbWs.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
                 sbWs.AppendLine("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
+                sbWs.AppendLine("  <sheetViews>");
+                sbWs.AppendLine("    <sheetView workbookViewId=\"0\"/>");
+                sbWs.AppendLine("  </sheetViews>");
+                sbWs.AppendLine("  <sheetFormatPr defaultRowHeight=\"20\"/>");
+
+                // 计算智能列宽 (自适应内容长度 + 中文字符加权 + 财务金额防截断)
+                int maxCols = sheet.Headers.Count;
+                for (int r = 0; r < sheet.Rows.Count; r++)
+                {
+                    if (sheet.Rows[r].Count > maxCols) maxCols = sheet.Rows[r].Count;
+                }
+
+                if (maxCols > 0)
+                {
+                    sbWs.AppendLine("  <cols>");
+                    for (int c = 0; c < maxCols; c++)
+                    {
+                        double maxDisplayLen = 0;
+                        if (c < sheet.Headers.Count)
+                        {
+                            maxDisplayLen = Math.Max(maxDisplayLen, MeasureDisplayLen(sheet.Headers[c]));
+                        }
+                        for (int r = 0; r < sheet.Rows.Count; r++)
+                        {
+                            if (c < sheet.Rows[r].Count)
+                            {
+                                var cell = sheet.Rows[r][c];
+                                if (cell.IsNumeric)
+                                {
+                                    string numStr = cell.NumericValue.ToString("#,##0.00", CultureInfo.InvariantCulture);
+                                    maxDisplayLen = Math.Max(maxDisplayLen, numStr.Length * 1.05);
+                                }
+                                else if (!string.IsNullOrEmpty(cell.Text))
+                                {
+                                    maxDisplayLen = Math.Max(maxDisplayLen, MeasureDisplayLen(cell.Text));
+                                }
+                            }
+                        }
+
+                        double finalWidth;
+                        string headerText = (c < sheet.Headers.Count) ? sheet.Headers[c] : "";
+                        if (headerText.Contains("余额") || headerText.Contains("金额"))
+                        {
+                            // 金额列保底宽度16.5，确保大额千分位数值绝对不会在Excel中显示为 ########
+                            finalWidth = Math.Max(16.5, maxDisplayLen + 3.0);
+                        }
+                        else if (headerText == "行次")
+                        {
+                            finalWidth = Math.Max(8.0, maxDisplayLen + 2.0);
+                        }
+                        else
+                        {
+                            finalWidth = Math.Max(18.0, maxDisplayLen + 3.0);
+                        }
+                        finalWidth = Math.Round(Math.Min(finalWidth, 50.0), 1);
+
+                        sbWs.AppendLine(string.Format("    <col min=\"{0}\" max=\"{0}\" width=\"{1}\" customWidth=\"1\"/>", c + 1, finalWidth.ToString("F1", CultureInfo.InvariantCulture)));
+                    }
+                    sbWs.AppendLine("  </cols>");
+                }
+
                 sbWs.AppendLine("  <sheetData>");
 
-                int r = 1;
+                int rowNum = 1;
                 if (sheet.Headers.Count > 0)
                 {
-                    sbWs.AppendLine(string.Format("    <row r=\"{0}\">", r));
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"24\" customHeight=\"1\">", rowNum));
                     for (int c = 0; c < sheet.Headers.Count; c++)
                     {
                         string colLetter = GetColName(c + 1);
-                        sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"1\" t=\"inlineStr\"><is><t>{2}</t></is></c>", colLetter, r, EscapeXml(sheet.Headers[c])));
+                        sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"1\" t=\"inlineStr\"><is><t>{2}</t></is></c>", colLetter, rowNum, EscapeXml(sheet.Headers[c])));
                     }
                     sbWs.AppendLine("    </row>");
-                    r++;
+                    rowNum++;
                 }
 
                 for (int rIdx = 0; rIdx < sheet.Rows.Count; rIdx++)
                 {
                     var row = sheet.Rows[rIdx];
-                    sbWs.AppendLine(string.Format("    <row r=\"{0}\">", r));
+                    sbWs.AppendLine(string.Format("    <row r=\"{0}\" ht=\"20\" customHeight=\"1\">", rowNum));
                     for (int cIdx = 0; cIdx < row.Count; cIdx++)
                     {
                         string colLetter = GetColName(cIdx + 1);
@@ -4497,15 +4576,15 @@ namespace DynamicWinRt
 
                         if (cell.IsNumeric)
                         {
-                            sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"{2}\"><v>{3}</v></c>", colLetter, r, style, cell.NumericValue.ToString(CultureInfo.InvariantCulture)));
+                            sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"{2}\"><v>{3}</v></c>", colLetter, rowNum, style, cell.NumericValue.ToString(CultureInfo.InvariantCulture)));
                         }
                         else
                         {
-                            sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"{2}\" t=\"inlineStr\"><is><t>{3}</t></is></c>", colLetter, r, style, EscapeXml(cell.Text)));
+                            sbWs.AppendLine(string.Format("      <c r=\"{0}{1}\" s=\"{2}\" t=\"inlineStr\"><is><t>{3}</t></is></c>", colLetter, rowNum, style, EscapeXml(cell.Text)));
                         }
                     }
                     sbWs.AppendLine("    </row>");
-                    r++;
+                    rowNum++;
                 }
 
                 sbWs.AppendLine("  </sheetData>");
@@ -4514,6 +4593,19 @@ namespace DynamicWinRt
             }
 
             return SimpleZipWriter.CreateZip(files);
+        }
+
+        static double MeasureDisplayLen(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            double len = 0;
+            foreach (char ch in text)
+            {
+                if (ch >= 0x4e00 && ch <= 0x9fa5) len += 2.1;
+                else if (ch >= 0xff00 || ch == '（' || ch == '）' || ch == '：' || ch == '、') len += 2.0;
+                else len += 1.1;
+            }
+            return len;
         }
 
         static string GetColName(int col)
@@ -4729,8 +4821,14 @@ namespace DynamicWinRt
                 for (int c = 0; c < r.Count; c++)
                 {
                     string text = r[c];
-                    float len = text.Length;
-                    if (len > colWeights[c]) colWeights[c] = Math.Min(45f, len);
+                    float len = 0;
+                    foreach (char ch in text)
+                    {
+                        if (ch >= 0x4e00 && ch <= 0x9fa5) len += 2.0f;
+                        else if (ch >= 0xff00 || ch == '（' || ch == '）' || ch == '：' || ch == '、') len += 2.0f;
+                        else len += 1.0f;
+                    }
+                    if (len > colWeights[c]) colWeights[c] = Math.Min(50f, len);
                 }
             }
 
