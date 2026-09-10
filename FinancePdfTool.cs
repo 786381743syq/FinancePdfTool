@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -208,13 +208,13 @@ namespace FinancePdfApp
             BuildTabImgToPdf();
             BuildTabPdfToImg();
             BuildTabPdfToExcel();
-            BuildTabExcelToPdf();
+            // BuildTabExcelToPdf(); // 暂时隐藏
 
             mainTabControl.TabPages.Add(tabPageImgToPdf);
             mainTabControl.TabPages.Add(tabPagePdfToImg);
             mainTabControl.TabPages.Add(tabPagePdfToExcel);
-            mainTabControl.TabPages.Add(tabPageExcelToPdf);
-            mainTabControl.ItemSize = new Size(220, 38);
+            // mainTabControl.TabPages.Add(tabPageExcelToPdf); // 暂时隐藏
+            mainTabControl.ItemSize = new Size(280, 38);
             this.Controls.Add(mainTabControl);
 
             // 后台任务工作者 (Tab 3 & 4)
@@ -1443,12 +1443,15 @@ namespace FinancePdfApp
                 }
             }
 
+            /*
             if (firstExcel != null)
             {
                 mainTabControl.SelectedTab = tabPageExcelToPdf;
                 LoadExcelDocument(firstExcel);
             }
-            else if (firstPdf != null)
+            else
+            */
+            if (firstPdf != null)
             {
                 if (mainTabControl.SelectedTab == tabPagePdfToExcel)
                 {
@@ -2435,7 +2438,7 @@ namespace FinancePdfApp
                     cmbExcelSheets.Items.Add(string.Format("{0}. {1} ({2}行 × {3}列)", i + 1, s.Title, s.Rows.Count, s.Headers.Count));
                 }
 
-                if (cmbExcelSheets.Items.Count > 0) cmbExcelSheets.SelectedIndex = (currentExtractedSheets.Count > 1) ? 1 : 0;
+                if (cmbExcelSheets.Items.Count > 0) cmbExcelSheets.SelectedIndex = 0;
 
                 string defaultOut = Path.Combine(Path.GetDirectoryName(filePath), Path.GetFileNameWithoutExtension(filePath) + ".xlsx");
                 txtExcelOutputDir.Text = defaultOut;
@@ -3719,7 +3722,7 @@ namespace DynamicWinRt
                 SizeMode = TabSizeMode.Fixed
             };
 
-            helpTabControl.ItemSize = new Size(185, 36);
+            helpTabControl.ItemSize = new Size(245, 36);
 
             TabPage tab1 = new TabPage("📄 图片合成 PDF");
             tab1.BackColor = Color.White;
@@ -3742,14 +3745,16 @@ namespace DynamicWinRt
             pnlTab3.Controls.Add(CreateHelpTextBox(GetTab3HelpText()));
             tab3.Controls.Add(pnlTab3);
 
+            /*
             TabPage tab4 = new TabPage("📑 Excel 转成 PDF");
             tab4.BackColor = Color.White;
             tab4.Font = new Font("Microsoft YaHei UI", 9.5F);
             Panel pnlTab4 = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 12, 16, 12) };
             pnlTab4.Controls.Add(CreateHelpTextBox(GetTab4HelpText()));
             tab4.Controls.Add(pnlTab4);
+            */
 
-            helpTabControl.TabPages.AddRange(new TabPage[] { tab1, tab2, tab3, tab4 });
+            helpTabControl.TabPages.AddRange(new TabPage[] { tab1, tab2, tab3 });
             this.Controls.Add(helpTabControl);
 
             helpTabControl.BringToFront();
