@@ -92,6 +92,7 @@ namespace FinancePdfApp
         private Button btnNextPage;
         private RadioButton rbFormatPng;
         private RadioButton rbFormatJpg;
+        private CheckBox chkAutoTrimPdf;
         private ComboBox cmbDpi;
         private RadioButton rbRangeAll;
         private RadioButton rbRangeChecked;
@@ -701,7 +702,7 @@ namespace FinancePdfApp
 
             rbFormatPng = new RadioButton
             {
-                Text = "⭐ PNG 高清无损 (发票公章推荐)",
+                Text = "⭐ PNG 高清无损",
                 Location = new Point(74, 25),
                 AutoSize = true,
                 Checked = true,
@@ -710,10 +711,27 @@ namespace FinancePdfApp
 
             rbFormatJpg = new RadioButton
             {
-                Text = "📁 JPG 通用压缩 (体积小·适合微信)",
-                Location = new Point(296, 25),
+                Text = "📁 JPG 通用压缩",
+                Location = new Point(218, 25),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(15, 23, 42)
+            };
+
+            chkAutoTrimPdf = new CheckBox
+            {
+                Text = "✂️ 智能去白边 (自动裁切)",
+                Location = new Point(362, 25),
+                AutoSize = true,
+                Checked = true,
+                ForeColor = Color.FromArgb(79, 70, 229),
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            chkAutoTrimPdf.CheckedChanged += delegate {
+                if (currentPdfDoc != null && currentSelectedPageIndex >= 0)
+                {
+                    RenderPdfPagePreview(currentSelectedPageIndex);
+                }
             };
 
             Label lblDpiTitle = new Label
@@ -740,7 +758,7 @@ namespace FinancePdfApp
             cmbDpi.SelectedIndex = 0;
 
             grpExportSettings.Controls.AddRange(new Control[] {
-                lblFmt, rbFormatPng, rbFormatJpg,
+                lblFmt, rbFormatPng, rbFormatJpg, chkAutoTrimPdf,
                 lblDpiTitle, cmbDpi
             });
             bottomPanelPdf.Controls.Add(grpExportSettings);
@@ -1065,39 +1083,68 @@ namespace FinancePdfApp
                     {
                         using (Image rendered = Image.FromStream(ms))
                         {
-                            Bitmap canvas = new Bitmap(boxW, boxH);
-                            using (Graphics g = Graphics.FromImage(canvas))
+                            Image drawImg = rendered;
+                            Bitmap previewCropped = null;
+                            bool wasTrimmed = false;
+
+                            if (chkAutoTrimPdf != null && chkAutoTrimPdf.Checked)
                             {
-                                g.Clear(Color.FromArgb(238, 242, 246));
-                                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                                g.SmoothingMode = SmoothingMode.HighQuality;
-
-                                float pad = 12f;
-                                float availW = boxW - pad * 2;
-                                float availH = boxH - pad * 2;
-                                float fitScale = Math.Min(availW / rendered.Width, availH / rendered.Height);
-
-                                float drawW = rendered.Width * fitScale;
-                                float drawH = rendered.Height * fitScale;
-                                float drawX = (boxW - drawW) / 2f;
-                                float drawY = (boxH - drawH) / 2f;
-
-                                using (SolidBrush shadow = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
+                                using (Bitmap tempBmp = new Bitmap(rendered))
                                 {
-                                    g.FillRectangle(shadow, drawX + 4, drawY + 4, drawW, drawH);
-                                }
-
-                                g.FillRectangle(Brushes.White, drawX, drawY, drawW, drawH);
-                                g.DrawImage(rendered, drawX, drawY, drawW, drawH);
-
-                                using (Pen borderPen = new Pen(Color.FromArgb(203, 213, 225), 1))
-                                {
-                                    g.DrawRectangle(borderPen, drawX, drawY, drawW, drawH);
+                                    Rectangle cropRect = DetectContentBounds(tempBmp);
+                                    if (cropRect.Width > 30 && cropRect.Height > 30 &&
+                                        (cropRect.Width < tempBmp.Width * 0.97f || cropRect.Height < tempBmp.Height * 0.97f))
+                                    {
+                                        previewCropped = tempBmp.Clone(cropRect, tempBmp.PixelFormat);
+                                        drawImg = previewCropped;
+                                        wasTrimmed = true;
+                                    }
                                 }
                             }
 
-                            if (previewBoxPdf.Image != null) previewBoxPdf.Image.Dispose();
-                            previewBoxPdf.Image = canvas;
+                            try
+                            {
+                                Bitmap canvas = new Bitmap(boxW, boxH);
+                                using (Graphics g = Graphics.FromImage(canvas))
+                                {
+                                    g.Clear(Color.FromArgb(238, 242, 246));
+                                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                    g.SmoothingMode = SmoothingMode.HighQuality;
+
+                                    float pad = 12f;
+                                    float availW = boxW - pad * 2;
+                                    float availH = boxH - pad * 2;
+                                    float fitScale = Math.Min(availW / drawImg.Width, availH / drawImg.Height);
+
+                                    float drawW = drawImg.Width * fitScale;
+                                    float drawH = drawImg.Height * fitScale;
+                                    float drawX = (boxW - drawW) / 2f;
+                                    float drawY = (boxH - drawH) / 2f;
+
+                                    using (SolidBrush shadow = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
+                                    {
+                                        g.FillRectangle(shadow, drawX + 4, drawY + 4, drawW, drawH);
+                                    }
+
+                                    g.FillRectangle(Brushes.White, drawX, drawY, drawW, drawH);
+                                    g.DrawImage(drawImg, drawX, drawY, drawW, drawH);
+
+                                    using (Pen borderPen = new Pen(Color.FromArgb(203, 213, 225), 1))
+                                    {
+                                        g.DrawRectangle(borderPen, drawX, drawY, drawW, drawH);
+                                    }
+                                }
+
+                                if (previewBoxPdf.Image != null) previewBoxPdf.Image.Dispose();
+                                previewBoxPdf.Image = canvas;
+
+                                string trimStatus = wasTrimmed ? " [✂️已智能去白边]" : "";
+                                lblCurrentPageInfo.Text = "第 " + (pageIndex + 1) + " / " + currentPdfPageCount + " 页" + trimStatus;
+                            }
+                            finally
+                            {
+                                if (previewCropped != null) previewCropped.Dispose();
+                            }
                         }
                     }
                 }
@@ -1181,6 +1228,7 @@ namespace FinancePdfApp
                 OutputDir = txtPdfOutputDir.Text,
                 IsPng = rbFormatPng.Checked,
                 DpiMode = cmbDpi.SelectedIndex,
+                AutoTrim = chkAutoTrimPdf.Checked,
                 PageIndices = pagesToExport
             };
 
@@ -1193,6 +1241,7 @@ namespace FinancePdfApp
             public string OutputDir;
             public bool IsPng;
             public int DpiMode;
+            public bool AutoTrim;
             public List<int> PageIndices;
         }
 
@@ -1255,16 +1304,36 @@ namespace FinancePdfApp
                                 string outFileName = pdfBaseName + "_第" + pageNumStr + "页" + ext;
                                 string outFilePath = Path.Combine(p.OutputDir, outFileName);
 
-                                if (p.IsPng)
+                                Bitmap saveBmp = finalBmp;
+                                Bitmap croppedBmp = null;
+                                if (p.AutoTrim)
                                 {
-                                    finalBmp.Save(outFilePath, ImageFormat.Png);
+                                    Rectangle contentRect = DetectContentBounds(finalBmp);
+                                    if (contentRect.Width > 50 && contentRect.Height > 50 &&
+                                        (contentRect.Width < finalBmp.Width * 0.97f || contentRect.Height < finalBmp.Height * 0.97f))
+                                    {
+                                        croppedBmp = finalBmp.Clone(contentRect, finalBmp.PixelFormat);
+                                        saveBmp = croppedBmp;
+                                    }
                                 }
-                                else
+
+                                try
                                 {
-                                    ImageCodecInfo encoder = GetEncoder(ImageFormat.Jpeg);
-                                    EncoderParameters encParams = new EncoderParameters(1);
-                                    encParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
-                                    finalBmp.Save(outFilePath, encoder, encParams);
+                                    if (p.IsPng)
+                                    {
+                                        saveBmp.Save(outFilePath, ImageFormat.Png);
+                                    }
+                                    else
+                                    {
+                                        ImageCodecInfo encoder = GetEncoder(ImageFormat.Jpeg);
+                                        EncoderParameters encParams = new EncoderParameters(1);
+                                        encParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+                                        saveBmp.Save(outFilePath, encoder, encParams);
+                                    }
+                                }
+                                finally
+                                {
+                                    if (croppedBmp != null) croppedBmp.Dispose();
                                 }
 
                                 exportedFiles.Add(outFilePath);
@@ -2067,6 +2136,87 @@ namespace FinancePdfApp
             return null;
         }
 
+        /// <summary>
+        /// 智能扫描图片内容边界，自动去除四周空白留白（纯白/灰白背景）。
+        /// 专用于银行回单、电子发票等在 A4 扫描或打印底版上的去白边。
+        /// </summary>
+        private static Rectangle DetectContentBounds(Bitmap bmp, int threshold = 240)
+        {
+            if (bmp == null) return Rectangle.Empty;
+
+            int width = bmp.Width;
+            int height = bmp.Height;
+
+            BitmapData data = null;
+            try
+            {
+                data = bmp.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                int stride = Math.Abs(data.Stride);
+                byte[] buffer = new byte[stride * height];
+                System.Runtime.InteropServices.Marshal.Copy(data.Scan0, buffer, 0, buffer.Length);
+
+                int minX = width, minY = height, maxX = -1, maxY = -1;
+
+                // 逐行快速扫描
+                for (int y = 0; y < height; y++)
+                {
+                    int rowOffset = y * stride;
+                    for (int x = 0; x < width; x++)
+                    {
+                        int idx = rowOffset + (x * 4);
+                        byte b = buffer[idx];
+                        byte g = buffer[idx + 1];
+                        byte r = buffer[idx + 2];
+                        byte a = buffer[idx + 3];
+
+                        // 如果是不透明且非纯白（任意通道低于阈值，即视为内容）
+                        if (a > 30 && (r < threshold || g < threshold || b < threshold))
+                        {
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (y < minY) minY = y;
+                            if (y > maxY) maxY = y;
+                        }
+                    }
+                }
+
+                // 如果整张图都是空白，或扫描无效，保持原图
+                if (maxX < minX || maxY < minY)
+                {
+                    return new Rectangle(0, 0, width, height);
+                }
+
+                int contentW = maxX - minX + 1;
+                int contentH = maxY - minY + 1;
+
+                // 如果内容本身已经占满 97% 以上宽和高，说明无需去白边
+                if (contentW > width * 0.97 && contentH > height * 0.97)
+                {
+                    return new Rectangle(0, 0, width, height);
+                }
+
+                // 预留舒适自然的安全内边距（自适应，约1.5%）
+                int pad = Math.Max(12, (int)(Math.Min(width, height) * 0.015));
+                int cropX = Math.Max(0, minX - pad);
+                int cropY = Math.Max(0, minY - pad);
+                int cropW = Math.Min(width - cropX, contentW + (pad * 2));
+                int cropH = Math.Min(height - cropY, contentH + (pad * 2));
+
+                return new Rectangle(cropX, cropY, cropW, cropH);
+            }
+            catch
+            {
+                return new Rectangle(0, 0, width, height);
+            }
+            finally
+            {
+                if (data != null)
+                {
+                    bmp.UnlockBits(data);
+                }
+            }
+        }
+
         #endregion
 
         [STAThread]
@@ -2317,7 +2467,13 @@ namespace FinancePdfApp
    • 高保真通用压缩算法，文件体积小巧轻量；
    • 适合用于微信、钉钉快速发送传输，或作为日常邮件附件查阅。
 
-【三、分辨率 (DPI) 精度选择】
+【三、✂️ 智能去白边（自动裁切四周多余空白留白）】
+1. 痛点解决：财务客户交易回单、银行电子回单、发票等常常放在标准 A4 页面上，上下左右留下大面积多余白纸。
+2. 毫秒级内存扫描：勾选「✂️ 智能去白边」后，系统毫秒级识别单据正文边界，自动剔除四周多余留白，仅提取核心单据主体！
+3. 动态舒适留白：裁切时自动保留约 1.5% 自然呼吸安全边距，绝不会切到文字或印章边框；
+4. 实时联动预览：勾选或取消该选项时，右侧大图预览即时同步渲染去白边效果，所见即所得。
+
+【四、分辨率 (DPI) 精度选择】
 1. 🖨️【300 DPI 超清打印】（默认推荐）：
    • 3x 超高采样率（A4 画幅约 2480×3508 像素），印章与小号字体极度锐利，满足专业印刷与法律存证标准。
 2. 💻【150 DPI 高清阅读】：
@@ -2325,12 +2481,12 @@ namespace FinancePdfApp
 3. ⚡【96 DPI 标准轻量】：
    • 1x 原生屏幕标准尺寸，体积最小，适合极速导出。
 
-【四、导出范围与灵活筛选】
+【五、导出范围与灵活筛选】
 1. 导出全部页面：一键将整本 PDF 的全部页面批量转换为单张图片。
 2. 仅导出列表勾选页：通过左侧勾选框，配合「全选 / 全不选 / 反选」快捷功能，自由提取指定页码。
 3. 仅导出当前预览页：适合只想单独保存当前在右侧大图查看的那一页。
 
-【五、自动归档与一键查看】
+【六、自动归档与一键查看】
 • 默认在 PDF 同级目录下自动建立「<文件名>_图片」专属文件夹，文件按「页码_01.png」自动规范命名；
 • 导出完毕后自动提示，并可一键打开输出文件夹。
 
