@@ -3107,6 +3107,11 @@ namespace FinancePdfApp
         [STAThread]
         static void Main(string[] args)
         {
+            if (args != null && args.Length >= 2 && args[0] == "--test-extract")
+            {
+                RunTestExtract(args[1]);
+                return;
+            }
             try
             {
                 Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -3131,6 +3136,40 @@ namespace FinancePdfApp
             catch (Exception ex)
             {
                 MessageBox.Show("程序启动错误：\n" + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        static void RunTestExtract(string pdfPath)
+        {
+            var sheets = PdfTableExtractor.ExtractWorkbook(pdfPath);
+            Console.WriteLine("Extracted " + sheets.Count + " sheets.");
+            for (int s = 0; s < sheets.Count; s++)
+            {
+                var sheet = sheets[s];
+                Console.WriteLine(string.Format("\n--- Sheet {0}: {1} (Total Rows: {2}) ---", s + 1, sheet.Title, sheet.Rows.Count));
+                int start = Math.Max(0, sheet.Rows.Count - 4);
+                for (int r = start; r < sheet.Rows.Count; r++)
+                {
+                    var parts = new List<string>();
+                    foreach (var c in sheet.Rows[r]) parts.Add("'" + c.Text + "'");
+                    Console.WriteLine(string.Format("Row {0,2}: {1}", r + 1, string.Join(" | ", parts.ToArray())));
+                }
+            }
+
+            byte[] xlsxBytes = ExcelBuilder.GenerateXlsx(sheets);
+            string fixedOut = Path.Combine(Path.GetDirectoryName(pdfPath), Path.GetFileNameWithoutExtension(pdfPath) + "_已修复.xlsx");
+            File.WriteAllBytes(fixedOut, xlsxBytes);
+            Console.WriteLine("Saved: " + fixedOut);
+
+            try
+            {
+                string origOut = Path.Combine(Path.GetDirectoryName(pdfPath), Path.GetFileNameWithoutExtension(pdfPath) + ".xlsx");
+                File.WriteAllBytes(origOut, xlsxBytes);
+                Console.WriteLine("Overwritten: " + origOut);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Original file busy: " + ex.Message);
             }
         }
     }
@@ -4324,8 +4363,8 @@ namespace DynamicWinRt
             }
 
             bodyChunks.Sort((a, b) => {
-                if (Math.Abs(a.Y - b.Y) > 3.5) return b.Y.CompareTo(a.Y);
-                if (Math.Abs(a.X - b.X) > 5.0) return a.X.CompareTo(b.X);
+                int cmp = b.Y.CompareTo(a.Y);
+                if (cmp != 0) return cmp;
                 return a.StreamIndex.CompareTo(b.StreamIndex);
             });
 
