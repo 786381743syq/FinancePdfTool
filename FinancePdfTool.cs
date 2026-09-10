@@ -9,6 +9,15 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Globalization;
+using System.Threading;
+
+// Windows 10/11 原生 WinRT 命名空间，提供极速、高保真矢量 PDF 渲染引擎
+using Windows.Data.Pdf;
+using Windows.Storage;
+using Windows.Storage.Streams;
+using Windows.Foundation;
+using Point = System.Drawing.Point;
+using Size = System.Drawing.Size;
 
 namespace FinancePdfApp
 {
@@ -45,6 +54,12 @@ namespace FinancePdfApp
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
 
+        // ================== 主选项卡 ==================
+        private TabControl mainTabControl;
+        private TabPage tabPageImgToPdf;
+        private TabPage tabPagePdfToImg;
+
+        // ================== Tab 1：图片合成 PDF 相关控件 ==================
         private List<ImageItem> items = new List<ImageItem>();
         private ListView listView;
         private PictureBox previewBox;
@@ -60,7 +75,33 @@ namespace FinancePdfApp
         private Button btnGenerate;
         private ProgressBar progressBar;
         private Label lblStatus;
-        private BackgroundWorker worker;
+        private BackgroundWorker workerImgToPdf;
+
+        // ================== Tab 2：PDF 提取图片 相关控件 ==================
+        private string currentPdfPath = null;
+        private PdfDocument currentPdfDoc = null;
+        private int currentPdfPageCount = 0;
+        private List<Windows.Foundation.Size> currentPdfPageSizes = new List<Windows.Foundation.Size>();
+        private int currentSelectedPageIndex = -1;
+
+        private Label lblPdfFileInfo;
+        private ListView listViewPdfPages;
+        private PictureBox previewBoxPdf;
+        private Label lblCurrentPageInfo;
+        private Button btnPrevPage;
+        private Button btnNextPage;
+        private RadioButton rbFormatPng;
+        private RadioButton rbFormatJpg;
+        private ComboBox cmbDpi;
+        private RadioButton rbRangeAll;
+        private RadioButton rbRangeChecked;
+        private RadioButton rbRangeCurrent;
+        private TextBox txtPdfOutputDir;
+        private Button btnBrowsePdfOutputDir;
+        private Button btnExportImages;
+        private ProgressBar progressBarPdf;
+        private Label lblPdfStatus;
+        private BackgroundWorker workerPdfToImg;
 
         public MainForm(string[] args)
         {
@@ -75,13 +116,13 @@ namespace FinancePdfApp
 
         private void InitializeComponent()
         {
-            this.Text = "财务专用 PDF 合成与智能压缩助手";
+            this.Text = "财务专用 PDF 转换器 - 图片与 PDF 互转神器";
             try { this.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
-            // 固定窗口大小，禁止随意缩放导致变形，保证所有元素100%完整可见
+            // 固定窗口大小，防止缩放变形
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
-            this.ClientSize = new Size(1020, 730);
+            this.ClientSize = new Size(1020, 750);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular, GraphicsUnit.Point);
             this.AllowDrop = true;
@@ -89,40 +130,84 @@ namespace FinancePdfApp
             this.DragDrop += MainForm_DragDrop;
             this.BackColor = Color.FromArgb(245, 247, 250);
 
-            // ================== 1. 顶部工具栏 (固定高度 60，按钮高度 36，上下均有充裕内边距) ==================
+            // ================== 主 Tab 容器 ==================
+            mainTabControl = new TabControl
+            {
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold),
+                ItemSize = new Size(180, 36),
+                SizeMode = TabSizeMode.Fixed
+            };
+
+            tabPageImgToPdf = new TabPage("📄 图片合成 PDF")
+            {
+                BackColor = Color.FromArgb(245, 247, 250),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular)
+            };
+
+            tabPagePdfToImg = new TabPage("🖼️ PDF 提取图片")
+            {
+                BackColor = Color.FromArgb(245, 247, 250),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular)
+            };
+
+            BuildTabImgToPdf();
+            BuildTabPdfToImg();
+
+            mainTabControl.TabPages.Add(tabPageImgToPdf);
+            mainTabControl.TabPages.Add(tabPagePdfToImg);
+            this.Controls.Add(mainTabControl);
+
+            // 后台任务工作者
+            workerImgToPdf = new BackgroundWorker { WorkerReportsProgress = true };
+            workerImgToPdf.DoWork += WorkerImgToPdf_DoWork;
+            workerImgToPdf.ProgressChanged += WorkerImgToPdf_ProgressChanged;
+            workerImgToPdf.RunWorkerCompleted += WorkerImgToPdf_RunWorkerCompleted;
+
+            workerPdfToImg = new BackgroundWorker { WorkerReportsProgress = true };
+            workerPdfToImg.DoWork += WorkerPdfToImg_DoWork;
+            workerPdfToImg.ProgressChanged += WorkerPdfToImg_ProgressChanged;
+            workerPdfToImg.RunWorkerCompleted += WorkerPdfToImg_RunWorkerCompleted;
+        }
+
+        #region ================== Tab 1：图片合成 PDF UI 与逻辑 ==================
+
+        private void BuildTabImgToPdf()
+        {
+            // 1. 顶部工具栏
             Panel topBar = new Panel
             {
                 Location = new Point(0, 0),
-                Size = new Size(1020, 60),
+                Size = new Size(1012, 54),
                 BackColor = Color.White
             };
 
-            Button btnAddFiles = CreateButton("➕ 添加图片", 105, 36, Color.FromArgb(37, 99, 235), Color.White);
-            btnAddFiles.Location = new Point(15, 12);
+            Button btnAddFiles = CreateButton("➕ 添加图片", 105, 34, Color.FromArgb(37, 99, 235), Color.White);
+            btnAddFiles.Location = new Point(15, 10);
             btnAddFiles.Click += BtnAddFiles_Click;
 
-            Button btnAddFolder = CreateButton("📁 添加文件夹", 115, 36, Color.FromArgb(71, 85, 105), Color.White);
-            btnAddFolder.Location = new Point(130, 12);
+            Button btnAddFolder = CreateButton("📁 添加文件夹", 115, 34, Color.FromArgb(71, 85, 105), Color.White);
+            btnAddFolder.Location = new Point(130, 10);
             btnAddFolder.Click += BtnAddFolder_Click;
 
-            Button btnMoveUp = CreateButton("⬆ 上移", 75, 36, Color.White, Color.FromArgb(51, 65, 85));
-            btnMoveUp.Location = new Point(265, 12);
+            Button btnMoveUp = CreateButton("⬆ 上移", 75, 34, Color.White, Color.FromArgb(51, 65, 85));
+            btnMoveUp.Location = new Point(265, 10);
             btnMoveUp.Click += delegate { MoveItem(-1); };
 
-            Button btnMoveDown = CreateButton("⬇ 下移", 75, 36, Color.White, Color.FromArgb(51, 65, 85));
-            btnMoveDown.Location = new Point(350, 12);
+            Button btnMoveDown = CreateButton("⬇ 下移", 75, 34, Color.White, Color.FromArgb(51, 65, 85));
+            btnMoveDown.Location = new Point(350, 10);
             btnMoveDown.Click += delegate { MoveItem(1); };
 
-            Button btnRotate = CreateButton("🔄 旋转90°", 100, 36, Color.White, Color.FromArgb(51, 65, 85));
-            btnRotate.Location = new Point(435, 12);
+            Button btnRotate = CreateButton("🔄 旋转90°", 95, 34, Color.White, Color.FromArgb(51, 65, 85));
+            btnRotate.Location = new Point(435, 10);
             btnRotate.Click += BtnRotate_Click;
 
-            Button btnRemove = CreateButton("❌ 移除选中", 100, 36, Color.White, Color.FromArgb(220, 38, 38));
-            btnRemove.Location = new Point(555, 12);
+            Button btnRemove = CreateButton("❌ 移除选中", 95, 34, Color.White, Color.FromArgb(220, 38, 38));
+            btnRemove.Location = new Point(540, 10);
             btnRemove.Click += BtnRemove_Click;
 
-            Button btnClear = CreateButton("清空列表", 90, 36, Color.White, Color.FromArgb(100, 116, 139));
-            btnClear.Location = new Point(665, 12);
+            Button btnClear = CreateButton("清空列表", 85, 34, Color.White, Color.FromArgb(100, 116, 139));
+            btnClear.Location = new Point(645, 10);
             btnClear.Click += delegate {
                 items.Clear();
                 UpdateListView();
@@ -135,21 +220,19 @@ namespace FinancePdfApp
                 btnRemove, btnClear
             });
 
-            // 分界线
             Panel dividerTop = new Panel
             {
-                Location = new Point(0, 59),
-                Size = new Size(1020, 1),
+                Location = new Point(0, 53),
+                Size = new Size(1012, 1),
                 BackColor = Color.FromArgb(226, 232, 240)
             };
             topBar.Controls.Add(dividerTop);
 
-            // ================== 2. 中间内容区 (高度 455) ==================
-            // 左侧：列表
+            // 2. 中间内容区 (左侧列表 + 右侧拟真预览)
             Panel pnlList = new Panel
             {
-                Location = new Point(15, 70),
-                Size = new Size(610, 435),
+                Location = new Point(15, 64),
+                Size = new Size(610, 420),
                 BackColor = Color.White,
                 BorderStyle = BorderStyle.FixedSingle
             };
@@ -173,11 +256,10 @@ namespace FinancePdfApp
             listView.SelectedIndexChanged += ListView_SelectedIndexChanged;
             pnlList.Controls.Add(listView);
 
-            // 右侧：大图实时预览
             Panel pnlPreview = new Panel
             {
-                Location = new Point(635, 70),
-                Size = new Size(370, 435),
+                Location = new Point(635, 64),
+                Size = new Size(360, 420),
                 BackColor = Color.White,
                 BorderStyle = BorderStyle.FixedSingle
             };
@@ -201,23 +283,23 @@ namespace FinancePdfApp
             pnlPreview.Controls.Add(previewBox);
             pnlPreview.Controls.Add(lblPreviewInfo);
 
-            // ================== 3. 底部配置与生成区 (固定高度 215) ==================
+            // 3. 底部配置与生成区
             Panel bottomPanel = new Panel
             {
-                Location = new Point(0, 515),
-                Size = new Size(1020, 215),
+                Location = new Point(0, 492),
+                Size = new Size(1012, 215),
                 BackColor = Color.White
             };
 
             Panel dividerBottom = new Panel
             {
                 Location = new Point(0, 0),
-                Size = new Size(1020, 1),
+                Size = new Size(1012, 1),
                 BackColor = Color.FromArgb(226, 232, 240)
             };
             bottomPanel.Controls.Add(dividerBottom);
 
-            // 3.1 画质与压缩选项 (左半部)
+            // 3.1 画质压缩选项
             GroupBox grpMode = new GroupBox
             {
                 Text = "画质与压缩选项",
@@ -247,12 +329,12 @@ namespace FinancePdfApp
             grpMode.Controls.Add(rbLossless);
             bottomPanel.Controls.Add(grpMode);
 
-            // 3.2 纸张与页面版式设置 (右半部)
+            // 3.2 纸张版式设置
             GroupBox grpPaper = new GroupBox
             {
                 Text = "纸张大小与页面版式",
                 Location = new Point(510, 6),
-                Size = new Size(495, 96),
+                Size = new Size(485, 96),
                 ForeColor = Color.FromArgb(30, 41, 59)
             };
 
@@ -288,7 +370,7 @@ namespace FinancePdfApp
             cmbOrientation = new ComboBox
             {
                 Location = new Point(288, 28),
-                Size = new Size(190, 26),
+                Size = new Size(185, 26),
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
             cmbOrientation.Items.AddRange(new object[] {
@@ -330,7 +412,7 @@ namespace FinancePdfApp
             grpPaper.Controls.AddRange(new Control[] { lblPaper, cmbPaperSize, lblOrient, cmbOrientation, chkKeepRatio, chkMargin });
             bottomPanel.Controls.Add(grpPaper);
 
-            // 3.2 输出路径
+            // 3.3 输出路径
             Label lblOut = new Label
             {
                 Text = "输出文件：",
@@ -348,12 +430,12 @@ namespace FinancePdfApp
             };
 
             btnBrowseOutput = CreateButton("浏览...", 85, 28, Color.White, Color.FromArgb(51, 65, 85));
-            btnBrowseOutput.Location = new Point(915, 108);
+            btnBrowseOutput.Location = new Point(910, 108);
             btnBrowseOutput.Click += BtnBrowseOutput_Click;
 
             bottomPanel.Controls.AddRange(new Control[] { lblOut, txtOutputPath, btnBrowseOutput });
 
-            // 3.3 进度条与“一键生成”大按钮 (绝对定位，完美显眼)
+            // 3.4 进度条与“一键生成”大按钮
             lblStatus = new Label
             {
                 Text = "就绪。可直接拖拽图片文件或文件夹到窗口中。",
@@ -369,25 +451,928 @@ namespace FinancePdfApp
                 Size = new Size(780, 24)
             };
 
-            btnGenerate = CreateButton("🚀 一键生成 PDF", 190, 52, Color.FromArgb(16, 185, 129), Color.White);
+            btnGenerate = CreateButton("🚀 一键生成 PDF", 185, 52, Color.FromArgb(16, 185, 129), Color.White);
             btnGenerate.Font = new Font("Microsoft YaHei UI", 11.5F, FontStyle.Bold);
             btnGenerate.Location = new Point(810, 146);
             btnGenerate.Click += BtnGenerate_Click;
 
             bottomPanel.Controls.AddRange(new Control[] { lblStatus, progressBar, btnGenerate });
 
-            // 将各主区域加入窗体
-            this.Controls.Add(bottomPanel);
-            this.Controls.Add(pnlPreview);
-            this.Controls.Add(pnlList);
-            this.Controls.Add(topBar);
-
-            // BackgroundWorker for background processing
-            worker = new BackgroundWorker { WorkerReportsProgress = true };
-            worker.DoWork += Worker_DoWork;
-            worker.ProgressChanged += Worker_ProgressChanged;
-            worker.RunWorkerCompleted += Worker_RunWorkerCompleted;
+            tabPageImgToPdf.Controls.Add(bottomPanel);
+            tabPageImgToPdf.Controls.Add(pnlPreview);
+            tabPageImgToPdf.Controls.Add(pnlList);
+            tabPageImgToPdf.Controls.Add(topBar);
         }
+
+        #endregion
+
+        #region ================== Tab 2：PDF 提取图片 UI 与逻辑 ==================
+
+        private void BuildTabPdfToImg()
+        {
+            // 1. 顶部操作栏
+            Panel topBarPdf = new Panel
+            {
+                Location = new Point(0, 0),
+                Size = new Size(1012, 54),
+                BackColor = Color.White
+            };
+
+            Button btnSelectPdf = CreateButton("📂 选择 PDF 文件", 135, 34, Color.FromArgb(37, 99, 235), Color.White);
+            btnSelectPdf.Location = new Point(15, 10);
+            btnSelectPdf.Click += BtnSelectPdf_Click;
+
+            Button btnOpenPdfDir = CreateButton("📁 打开输出目录", 130, 34, Color.FromArgb(71, 85, 105), Color.White);
+            btnOpenPdfDir.Location = new Point(160, 10);
+            btnOpenPdfDir.Click += BtnOpenPdfDir_Click;
+
+            Button btnClearPdf = CreateButton("清空", 75, 34, Color.White, Color.FromArgb(100, 116, 139));
+            btnClearPdf.Location = new Point(300, 10);
+            btnClearPdf.Click += delegate { ClearPdfView(); };
+
+            lblPdfFileInfo = new Label
+            {
+                Location = new Point(390, 10),
+                Size = new Size(605, 34),
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(30, 41, 59),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
+                Text = "未加载任何 PDF 文件。请点击左侧按钮或直接拖拽 PDF 到此处。"
+            };
+
+            topBarPdf.Controls.AddRange(new Control[] {
+                btnSelectPdf, btnOpenPdfDir, btnClearPdf, lblPdfFileInfo
+            });
+
+            Panel dividerTop = new Panel
+            {
+                Location = new Point(0, 53),
+                Size = new Size(1012, 1),
+                BackColor = Color.FromArgb(226, 232, 240)
+            };
+            topBarPdf.Controls.Add(dividerTop);
+
+            // 2. 中间内容区 (左侧页面列表 + 右侧页面实时预览)
+            Panel pnlPdfPages = new Panel
+            {
+                Location = new Point(15, 64),
+                Size = new Size(420, 420),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            Panel pnlPageListHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 36,
+                BackColor = Color.FromArgb(248, 250, 252)
+            };
+
+            Label lblListTitle = new Label
+            {
+                Text = "📑 页面列表 (勾选导出)",
+                Location = new Point(10, 8),
+                AutoSize = true,
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(51, 65, 85)
+            };
+
+            Button btnSelectAll = CreateButton("全选", 50, 24, Color.White, Color.FromArgb(51, 65, 85));
+            btnSelectAll.Location = new Point(235, 6);
+            btnSelectAll.Font = new Font("Microsoft YaHei UI", 8.5F);
+            btnSelectAll.Click += delegate { SetAllPagesChecked(true); };
+
+            Button btnDeselectAll = CreateButton("全不选", 55, 24, Color.White, Color.FromArgb(51, 65, 85));
+            btnDeselectAll.Location = new Point(292, 6);
+            btnDeselectAll.Font = new Font("Microsoft YaHei UI", 8.5F);
+            btnDeselectAll.Click += delegate { SetAllPagesChecked(false); };
+
+            Button btnInvertSelect = CreateButton("反选", 50, 24, Color.White, Color.FromArgb(51, 65, 85));
+            btnInvertSelect.Location = new Point(355, 6);
+            btnInvertSelect.Font = new Font("Microsoft YaHei UI", 8.5F);
+            btnInvertSelect.Click += delegate { InvertPagesChecked(); };
+
+            pnlPageListHeader.Controls.AddRange(new Control[] { lblListTitle, btnSelectAll, btnDeselectAll, btnInvertSelect });
+
+            listViewPdfPages = new ListView
+            {
+                Dock = DockStyle.Fill,
+                View = View.Details,
+                CheckBoxes = true,
+                FullRowSelect = true,
+                GridLines = true,
+                MultiSelect = false,
+                BorderStyle = BorderStyle.None,
+                BackColor = Color.White
+            };
+            listViewPdfPages.Columns.Add("页码", 90, HorizontalAlignment.Left);
+            listViewPdfPages.Columns.Add("尺寸", 115, HorizontalAlignment.Center);
+            listViewPdfPages.Columns.Add("版式", 65, HorizontalAlignment.Center);
+            listViewPdfPages.Columns.Add("画幅规格", 125, HorizontalAlignment.Center);
+            listViewPdfPages.SelectedIndexChanged += ListViewPdfPages_SelectedIndexChanged;
+
+            pnlPdfPages.Controls.Add(listViewPdfPages);
+            pnlPdfPages.Controls.Add(pnlPageListHeader);
+
+            // 右侧实时大图预览区
+            Panel pnlPdfPreview = new Panel
+            {
+                Location = new Point(445, 64),
+                Size = new Size(550, 420),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            Panel pnlPreviewNav = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 36,
+                BackColor = Color.FromArgb(248, 250, 252)
+            };
+
+            btnPrevPage = CreateButton("◀ 上一页", 80, 26, Color.White, Color.FromArgb(51, 65, 85));
+            btnPrevPage.Location = new Point(10, 5);
+            btnPrevPage.Font = new Font("Microsoft YaHei UI", 9F);
+            btnPrevPage.Click += delegate { NavigatePage(-1); };
+
+            lblCurrentPageInfo = new Label
+            {
+                Location = new Point(100, 5),
+                Size = new Size(345, 26),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(51, 65, 85),
+                Text = "点击左侧页面预览"
+            };
+
+            btnNextPage = CreateButton("下一页 ▶", 80, 26, Color.White, Color.FromArgb(51, 65, 85));
+            btnNextPage.Location = new Point(455, 5);
+            btnNextPage.Font = new Font("Microsoft YaHei UI", 9F);
+            btnNextPage.Click += delegate { NavigatePage(1); };
+
+            pnlPreviewNav.Controls.AddRange(new Control[] { btnPrevPage, lblCurrentPageInfo, btnNextPage });
+
+            previewBoxPdf = new PictureBox
+            {
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.FromArgb(238, 242, 246)
+            };
+
+            pnlPdfPreview.Controls.Add(previewBoxPdf);
+            pnlPdfPreview.Controls.Add(pnlPreviewNav);
+
+            // 3. 底部配置与生成区
+            Panel bottomPanelPdf = new Panel
+            {
+                Location = new Point(0, 492),
+                Size = new Size(1012, 215),
+                BackColor = Color.White
+            };
+
+            Panel dividerBottomPdf = new Panel
+            {
+                Location = new Point(0, 0),
+                Size = new Size(1012, 1),
+                BackColor = Color.FromArgb(226, 232, 240)
+            };
+            bottomPanelPdf.Controls.Add(dividerBottomPdf);
+
+            // 3.1 格式与清晰度 (左半部)
+            GroupBox grpExportSettings = new GroupBox
+            {
+                Text = "导出格式与分辨率",
+                Location = new Point(15, 6),
+                Size = new Size(485, 96),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            Label lblFmt = new Label
+            {
+                Text = "格式：",
+                Location = new Point(12, 27),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(51, 65, 85)
+            };
+
+            rbFormatPng = new RadioButton
+            {
+                Text = "⭐ PNG 高清无损 (公章发票极清·推荐)",
+                Location = new Point(60, 25),
+                AutoSize = true,
+                Checked = true,
+                ForeColor = Color.FromArgb(15, 23, 42)
+            };
+
+            rbFormatJpg = new RadioButton
+            {
+                Text = "📁 JPG 通用压缩 (体积小·适合微信)",
+                Location = new Point(310, 25),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(15, 23, 42)
+            };
+
+            Label lblDpiTitle = new Label
+            {
+                Text = "清晰度：",
+                Location = new Point(12, 59),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(51, 65, 85)
+            };
+
+            cmbDpi = new ComboBox
+            {
+                Location = new Point(68, 56),
+                Size = new Size(405, 26),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cmbDpi.Items.AddRange(new object[] {
+                "300 DPI - 超清打印 (3x高精 · 票据公章发票极佳清晰度 · 推荐)",
+                "150 DPI - 高清阅读 (1.5x放大 · 适合电脑屏幕与归档)",
+                "96 DPI - 标准轻量 (1x原生 · 体积最小)"
+            });
+            cmbDpi.SelectedIndex = 0;
+
+            grpExportSettings.Controls.AddRange(new Control[] {
+                lblFmt, rbFormatPng, rbFormatJpg,
+                lblDpiTitle, cmbDpi
+            });
+            bottomPanelPdf.Controls.Add(grpExportSettings);
+
+            // 3.2 导出范围 (右半部)
+            GroupBox grpRange = new GroupBox
+            {
+                Text = "导出范围",
+                Location = new Point(510, 6),
+                Size = new Size(485, 96),
+                ForeColor = Color.FromArgb(30, 41, 59)
+            };
+
+            rbRangeAll = new RadioButton
+            {
+                Text = "导出全部页面",
+                Location = new Point(15, 26),
+                AutoSize = true,
+                Checked = true,
+                ForeColor = Color.FromArgb(15, 23, 42)
+            };
+
+            rbRangeChecked = new RadioButton
+            {
+                Text = "仅导出左侧列表中已勾选的页面",
+                Location = new Point(15, 58),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(15, 23, 42)
+            };
+
+            rbRangeCurrent = new RadioButton
+            {
+                Text = "仅导出当前预览页",
+                Location = new Point(275, 58),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(15, 23, 42)
+            };
+
+            grpRange.Controls.AddRange(new Control[] { rbRangeAll, rbRangeChecked, rbRangeCurrent });
+            bottomPanelPdf.Controls.Add(grpRange);
+
+            // 3.3 输出目录
+            Label lblOutDir = new Label
+            {
+                Text = "保存目录：",
+                Location = new Point(15, 110),
+                Size = new Size(75, 26),
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(51, 65, 85)
+            };
+
+            txtPdfOutputDir = new TextBox
+            {
+                Location = new Point(90, 109),
+                Size = new Size(815, 28),
+                Font = new Font("Microsoft YaHei UI", 9.5F)
+            };
+
+            btnBrowsePdfOutputDir = CreateButton("浏览...", 85, 28, Color.White, Color.FromArgb(51, 65, 85));
+            btnBrowsePdfOutputDir.Location = new Point(910, 108);
+            btnBrowsePdfOutputDir.Click += BtnBrowsePdfOutputDir_Click;
+
+            bottomPanelPdf.Controls.AddRange(new Control[] { lblOutDir, txtPdfOutputDir, btnBrowsePdfOutputDir });
+
+            // 3.4 进度条与“一键导出”大按钮
+            lblPdfStatus = new Label
+            {
+                Text = "就绪。请选择或拖拽 PDF 文件到窗口中。",
+                Location = new Point(15, 147),
+                Size = new Size(760, 22),
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(71, 85, 105)
+            };
+
+            progressBarPdf = new ProgressBar
+            {
+                Location = new Point(15, 174),
+                Size = new Size(760, 24)
+            };
+
+            btnExportImages = CreateButton("🚀 导出为高清图片", 205, 52, Color.FromArgb(16, 185, 129), Color.White);
+            btnExportImages.Font = new Font("Microsoft YaHei UI", 11.5F, FontStyle.Bold);
+            btnExportImages.Location = new Point(790, 146);
+            btnExportImages.Click += BtnExportImages_Click;
+
+            bottomPanelPdf.Controls.AddRange(new Control[] { lblPdfStatus, progressBarPdf, btnExportImages });
+
+            tabPagePdfToImg.Controls.Add(bottomPanelPdf);
+            tabPagePdfToImg.Controls.Add(pnlPdfPreview);
+            tabPagePdfToImg.Controls.Add(pnlPdfPages);
+            tabPagePdfToImg.Controls.Add(topBarPdf);
+        }
+
+        private void BtnSelectPdf_Click(object sender, EventArgs e)
+        {
+            using (OpenFileDialog ofd = new OpenFileDialog())
+            {
+                ofd.Title = "选择需要转换为图片的 PDF 文件";
+                ofd.Filter = "PDF 文件 (*.pdf)|*.pdf";
+                ofd.Multiselect = false;
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    LoadPdfDocument(ofd.FileName);
+                }
+            }
+        }
+
+        private void BtnOpenPdfDir_Click(object sender, EventArgs e)
+        {
+            string dir = txtPdfOutputDir.Text;
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+            {
+                try { System.Diagnostics.Process.Start("explorer.exe", dir); } catch { }
+            }
+            else if (!string.IsNullOrEmpty(currentPdfPath) && File.Exists(currentPdfPath))
+            {
+                try { System.Diagnostics.Process.Start("explorer.exe", Path.GetDirectoryName(currentPdfPath)); } catch { }
+            }
+            else
+            {
+                MessageBox.Show("尚未生成图片目录！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        private void ClearPdfView()
+        {
+            currentPdfPath = null;
+            currentPdfDoc = null;
+            currentPdfPageCount = 0;
+            currentPdfPageSizes.Clear();
+            currentSelectedPageIndex = -1;
+
+            lblPdfFileInfo.Text = "未加载任何 PDF 文件。请点击左侧按钮或直接拖拽 PDF 到此处。";
+            listViewPdfPages.Items.Clear();
+            ClearPdfPreview();
+            txtPdfOutputDir.Text = "";
+            lblPdfStatus.Text = "已清空。";
+            progressBarPdf.Value = 0;
+            rbRangeAll.Text = "导出全部页面";
+        }
+
+        private void ClearPdfPreview()
+        {
+            if (previewBoxPdf.Image != null)
+            {
+                previewBoxPdf.Image.Dispose();
+                previewBoxPdf.Image = null;
+            }
+            lblCurrentPageInfo.Text = "点击左侧页面预览";
+        }
+
+        private void SetAllPagesChecked(bool check)
+        {
+            listViewPdfPages.BeginUpdate();
+            foreach (ListViewItem item in listViewPdfPages.Items)
+            {
+                item.Checked = check;
+            }
+            listViewPdfPages.EndUpdate();
+        }
+
+        private void InvertPagesChecked()
+        {
+            listViewPdfPages.BeginUpdate();
+            foreach (ListViewItem item in listViewPdfPages.Items)
+            {
+                item.Checked = !item.Checked;
+            }
+            listViewPdfPages.EndUpdate();
+        }
+
+        private void NavigatePage(int delta)
+        {
+            if (currentPdfPageCount <= 0) return;
+            int newIdx = currentSelectedPageIndex + delta;
+            if (newIdx >= 0 && newIdx < currentPdfPageCount)
+            {
+                listViewPdfPages.Items[newIdx].Selected = true;
+                listViewPdfPages.Items[newIdx].EnsureVisible();
+            }
+        }
+
+        private void ListViewPdfPages_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (listViewPdfPages.SelectedIndices.Count == 0) return;
+            int pageIdx = listViewPdfPages.SelectedIndices[0];
+            RenderPdfPagePreview(pageIdx);
+        }
+
+        private void LoadPdfDocument(string path)
+        {
+            if (!File.Exists(path)) return;
+            try
+            {
+                currentPdfPath = path;
+                FileInfo fi = new FileInfo(path);
+                lblPdfFileInfo.Text = "已加载：" + fi.Name + " (" + FormatFileSize(fi.Length) + ")";
+
+                string dir = Path.GetDirectoryName(path);
+                string nameWithoutExt = Path.GetFileNameWithoutExtension(path);
+                txtPdfOutputDir.Text = Path.Combine(dir, nameWithoutExt + "_图片");
+
+                lblPdfStatus.Text = "正在解析 PDF 页面...";
+                Application.DoEvents();
+
+                var storageFile = AwaitOp(StorageFile.GetFileFromPathAsync(path));
+                var doc = AwaitOp(PdfDocument.LoadFromFileAsync(storageFile));
+
+                currentPdfDoc = doc;
+                currentPdfPageCount = (int)doc.PageCount;
+
+                listViewPdfPages.BeginUpdate();
+                listViewPdfPages.Items.Clear();
+                currentPdfPageSizes.Clear();
+
+                for (uint i = 0; i < doc.PageCount; i++)
+                {
+                    using (var page = doc.GetPage(i))
+                    {
+                        var size = page.Size;
+                        currentPdfPageSizes.Add(size);
+
+                        bool isLandscape = size.Width > size.Height;
+                        string orient = isLandscape ? "横版" : "竖版";
+                        string dimStr = Math.Round(size.Width) + " x " + Math.Round(size.Height) + " pt";
+
+                        double ratio = size.Height > 0 ? (double)size.Width / size.Height : 1.0;
+                        string note = "";
+                        if (Math.Abs(ratio - 0.707) < 0.05 || Math.Abs(ratio - 1.414) < 0.05)
+                            note = "A4/A3 国际标准";
+                        else if (Math.Abs(ratio - 1.0) < 0.05)
+                            note = "正方形";
+                        else
+                            note = "自定义画幅";
+
+                        ListViewItem lvi = new ListViewItem("第 " + (i + 1) + " 页");
+                        lvi.SubItems.Add(dimStr);
+                        lvi.SubItems.Add(orient);
+                        lvi.SubItems.Add(note);
+                        lvi.Checked = true;
+                        lvi.Tag = (int)i;
+                        listViewPdfPages.Items.Add(lvi);
+                    }
+                }
+                listViewPdfPages.EndUpdate();
+
+                lblPdfFileInfo.Text = "已加载：" + fi.Name + " (" + FormatFileSize(fi.Length) + " · 共 " + currentPdfPageCount + " 页)";
+                lblPdfStatus.Text = "就绪。共 " + currentPdfPageCount + " 页，默认已全选，可随时点击导出。";
+                rbRangeAll.Text = "导出全部页面 (共 " + currentPdfPageCount + " 页)";
+
+                if (listViewPdfPages.Items.Count > 0)
+                {
+                    listViewPdfPages.Items[0].Selected = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                lblPdfStatus.Text = "加载 PDF 失败: " + ex.Message;
+                MessageBox.Show("加载 PDF 失败：\n" + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void RenderPdfPagePreview(int pageIndex)
+        {
+            if (currentPdfDoc == null || pageIndex < 0 || pageIndex >= currentPdfPageCount)
+            {
+                ClearPdfPreview();
+                return;
+            }
+
+            try
+            {
+                currentSelectedPageIndex = pageIndex;
+                lblCurrentPageInfo.Text = "第 " + (pageIndex + 1) + " / " + currentPdfPageCount + " 页";
+
+                int boxW = previewBoxPdf.ClientSize.Width;
+                int boxH = previewBoxPdf.ClientSize.Height;
+                if (boxW <= 0) boxW = 530;
+                if (boxH <= 0) boxH = 370;
+
+                using (var page = currentPdfDoc.GetPage((uint)pageIndex))
+                {
+                    var pageSize = page.Size;
+                    float scale = Math.Min((float)boxW * 1.5f / (float)pageSize.Width, (float)boxH * 1.5f / (float)pageSize.Height);
+                    if (scale < 0.2f) scale = 0.5f;
+                    if (scale > 2.5f) scale = 2.5f;
+
+                    var stream = new InMemoryRandomAccessStream();
+                    var opt = new PdfPageRenderOptions();
+                    opt.DestinationWidth = (uint)Math.Max(10, Math.Round(pageSize.Width * scale));
+                    opt.DestinationHeight = (uint)Math.Max(10, Math.Round(pageSize.Height * scale));
+
+                    AwaitAction(page.RenderToStreamAsync(stream, opt));
+                    byte[] bytes = ReadStreamBytes(stream);
+                    stream.Dispose();
+
+                    using (MemoryStream ms = new MemoryStream(bytes))
+                    {
+                        using (Image rendered = Image.FromStream(ms))
+                        {
+                            Bitmap canvas = new Bitmap(boxW, boxH);
+                            using (Graphics g = Graphics.FromImage(canvas))
+                            {
+                                g.Clear(Color.FromArgb(238, 242, 246));
+                                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                g.SmoothingMode = SmoothingMode.HighQuality;
+
+                                float pad = 12f;
+                                float availW = boxW - pad * 2;
+                                float availH = boxH - pad * 2;
+                                float fitScale = Math.Min(availW / rendered.Width, availH / rendered.Height);
+
+                                float drawW = rendered.Width * fitScale;
+                                float drawH = rendered.Height * fitScale;
+                                float drawX = (boxW - drawW) / 2f;
+                                float drawY = (boxH - drawH) / 2f;
+
+                                using (SolidBrush shadow = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
+                                {
+                                    g.FillRectangle(shadow, drawX + 4, drawY + 4, drawW, drawH);
+                                }
+
+                                g.FillRectangle(Brushes.White, drawX, drawY, drawW, drawH);
+                                g.DrawImage(rendered, drawX, drawY, drawW, drawH);
+
+                                using (Pen borderPen = new Pen(Color.FromArgb(203, 213, 225), 1))
+                                {
+                                    g.DrawRectangle(borderPen, drawX, drawY, drawW, drawH);
+                                }
+                            }
+
+                            if (previewBoxPdf.Image != null) previewBoxPdf.Image.Dispose();
+                            previewBoxPdf.Image = canvas;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lblCurrentPageInfo.Text = "预览加载失败: " + ex.Message;
+            }
+        }
+
+        private void BtnBrowsePdfOutputDir_Click(object sender, EventArgs e)
+        {
+            using (FolderBrowserDialog fbd = new FolderBrowserDialog())
+            {
+                fbd.Description = "选择导出的图片保存文件夹";
+                if (!string.IsNullOrEmpty(txtPdfOutputDir.Text))
+                {
+                    try { fbd.SelectedPath = txtPdfOutputDir.Text; } catch { }
+                }
+                if (fbd.ShowDialog() == DialogResult.OK)
+                {
+                    txtPdfOutputDir.Text = fbd.SelectedPath;
+                }
+            }
+        }
+
+        private void BtnExportImages_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(currentPdfPath) || !File.Exists(currentPdfPath))
+            {
+                MessageBox.Show("请先打开需要转换的 PDF 文件！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(txtPdfOutputDir.Text))
+            {
+                MessageBox.Show("请指定图片保存的输出目录！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            List<int> pagesToExport = new List<int>();
+            if (rbRangeAll.Checked)
+            {
+                for (int i = 0; i < currentPdfPageCount; i++) pagesToExport.Add(i);
+            }
+            else if (rbRangeCurrent.Checked)
+            {
+                if (currentSelectedPageIndex >= 0 && currentSelectedPageIndex < currentPdfPageCount)
+                {
+                    pagesToExport.Add(currentSelectedPageIndex);
+                }
+                else
+                {
+                    pagesToExport.Add(0);
+                }
+            }
+            else // rbRangeChecked
+            {
+                foreach (ListViewItem item in listViewPdfPages.Items)
+                {
+                    if (item.Checked)
+                    {
+                        pagesToExport.Add((int)item.Tag);
+                    }
+                }
+            }
+
+            if (pagesToExport.Count == 0)
+            {
+                MessageBox.Show("未选中任何需要导出的页面！请勾选至少一个页面。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            btnExportImages.Enabled = false;
+            progressBarPdf.Value = 0;
+            lblPdfStatus.Text = "准备导出高清图片...";
+
+            PdfExportParams p = new PdfExportParams
+            {
+                PdfPath = currentPdfPath,
+                OutputDir = txtPdfOutputDir.Text,
+                IsPng = rbFormatPng.Checked,
+                DpiMode = cmbDpi.SelectedIndex,
+                PageIndices = pagesToExport
+            };
+
+            workerPdfToImg.RunWorkerAsync(p);
+        }
+
+        private class PdfExportParams
+        {
+            public string PdfPath;
+            public string OutputDir;
+            public bool IsPng;
+            public int DpiMode;
+            public List<int> PageIndices;
+        }
+
+        private void WorkerPdfToImg_DoWork(object sender, DoWorkEventArgs e)
+        {
+            PdfExportParams p = (PdfExportParams)e.Argument;
+            if (!Directory.Exists(p.OutputDir))
+            {
+                Directory.CreateDirectory(p.OutputDir);
+            }
+
+            var storageFile = AwaitOp(StorageFile.GetFileFromPathAsync(p.PdfPath));
+            var doc = AwaitOp(PdfDocument.LoadFromFileAsync(storageFile));
+
+            float dpiScale = 4.1667f;
+            if (p.DpiMode == 1) dpiScale = 2.0833f;
+            else if (p.DpiMode == 2) dpiScale = 1.3333f;
+
+            string pdfBaseName = Path.GetFileNameWithoutExtension(p.PdfPath);
+            int total = p.PageIndices.Count;
+            int digits = total > 99 ? 3 : 2;
+
+            List<string> exportedFiles = new List<string>();
+
+            for (int i = 0; i < total; i++)
+            {
+                int pageIdx = p.PageIndices[i];
+                int progress = (int)((i + 0.5f) / total * 100);
+                workerPdfToImg.ReportProgress(progress, "正在导出第 " + (i + 1) + "/" + total + " 页 (PDF第 " + (pageIdx + 1) + " 页)...");
+
+                using (var page = doc.GetPage((uint)pageIdx))
+                {
+                    var pageSize = page.Size;
+                    var stream = new InMemoryRandomAccessStream();
+                    var opt = new PdfPageRenderOptions();
+                    opt.DestinationWidth = (uint)Math.Max(10, Math.Round(pageSize.Width * dpiScale));
+                    opt.DestinationHeight = (uint)Math.Max(10, Math.Round(pageSize.Height * dpiScale));
+
+                    AwaitAction(page.RenderToStreamAsync(stream, opt));
+                    byte[] bytes = ReadStreamBytes(stream);
+                    stream.Dispose();
+
+                    using (MemoryStream ms = new MemoryStream(bytes))
+                    {
+                        using (Image rendered = Image.FromStream(ms))
+                        {
+                            using (Bitmap finalBmp = new Bitmap(rendered.Width, rendered.Height, PixelFormat.Format32bppRgb))
+                            {
+                                using (Graphics g = Graphics.FromImage(finalBmp))
+                                {
+                                    g.Clear(Color.White);
+                                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                    g.SmoothingMode = SmoothingMode.HighQuality;
+                                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                                    g.DrawImage(rendered, 0, 0, rendered.Width, rendered.Height);
+                                }
+
+                                string pageNumStr = (pageIdx + 1).ToString().PadLeft(digits, '0');
+                                string ext = p.IsPng ? ".png" : ".jpg";
+                                string outFileName = pdfBaseName + "_第" + pageNumStr + "页" + ext;
+                                string outFilePath = Path.Combine(p.OutputDir, outFileName);
+
+                                if (p.IsPng)
+                                {
+                                    finalBmp.Save(outFilePath, ImageFormat.Png);
+                                }
+                                else
+                                {
+                                    ImageCodecInfo encoder = GetEncoder(ImageFormat.Jpeg);
+                                    EncoderParameters encParams = new EncoderParameters(1);
+                                    encParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+                                    finalBmp.Save(outFilePath, encoder, encParams);
+                                }
+
+                                exportedFiles.Add(outFilePath);
+                            }
+                        }
+                    }
+                }
+            }
+
+            e.Result = new object[] { exportedFiles.Count, p.OutputDir };
+        }
+
+        private void WorkerPdfToImg_ProgressChanged(object sender, ProgressChangedEventArgs e)
+        {
+            progressBarPdf.Value = Math.Min(100, Math.Max(0, e.ProgressPercentage));
+            lblPdfStatus.Text = (string)e.UserState;
+        }
+
+        private void WorkerPdfToImg_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        {
+            btnExportImages.Enabled = true;
+            progressBarPdf.Value = 100;
+
+            if (e.Error != null)
+            {
+                lblPdfStatus.Text = "导出失败: " + e.Error.Message;
+                MessageBox.Show("导出图片时发生错误：\n" + e.Error.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            object[] res = (object[])e.Result;
+            int count = (int)res[0];
+            string outDir = (string)res[1];
+
+            lblPdfStatus.Text = "✅ 成功导出 " + count + " 张高清图片至：" + outDir;
+
+            string msg = "图片导出完成！\n\n共成功导出：" + count + " 张高清图片\n保存目录：" + outDir + "\n\n是否立即打开该文件夹？";
+            DialogResult dr = MessageBox.Show(msg, "处理完成", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (dr == DialogResult.Yes)
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start("explorer.exe", outDir);
+                }
+                catch { }
+            }
+        }
+
+        #endregion
+
+        #region ================== WinRT 异步操作辅助封装 ==================
+
+        private static T AwaitOp<T>(IAsyncOperation<T> op)
+        {
+            ManualResetEvent done = new ManualResetEvent(false);
+            T res = default(T);
+            Exception err = null;
+            op.Completed = new AsyncOperationCompletedHandler<T>((info, status) =>
+            {
+                try
+                {
+                    if (status == AsyncStatus.Completed)
+                    {
+                        res = info.GetResults();
+                    }
+                    else
+                    {
+                        err = info.ErrorCode;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    err = ex;
+                }
+                finally
+                {
+                    done.Set();
+                }
+            });
+            done.WaitOne();
+            if (err != null) throw err;
+            return res;
+        }
+
+        private static void AwaitAction(IAsyncAction action)
+        {
+            ManualResetEvent done = new ManualResetEvent(false);
+            Exception err = null;
+            action.Completed = new AsyncActionCompletedHandler((info, status) =>
+            {
+                try
+                {
+                    if (status != AsyncStatus.Completed)
+                    {
+                        err = info.ErrorCode;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    err = ex;
+                }
+                finally
+                {
+                    done.Set();
+                }
+            });
+            done.WaitOne();
+            if (err != null) throw err;
+        }
+
+        private static byte[] ReadStreamBytes(InMemoryRandomAccessStream stream)
+        {
+            using (var reader = new DataReader(stream.GetInputStreamAt(0)))
+            {
+                AwaitOp(reader.LoadAsync((uint)stream.Size));
+                byte[] bytes = new byte[stream.Size];
+                reader.ReadBytes(bytes);
+                return bytes;
+            }
+        }
+
+        #endregion
+
+        #region ================== 全局拖拽与通用事件 ==================
+
+        private void MainForm_DragEnter(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effect = DragDropEffects.Copy;
+            }
+            else
+            {
+                e.Effect = DragDropEffects.None;
+            }
+        }
+
+        private void MainForm_DragDrop(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] paths = (string[])e.Data.GetData(DataFormats.FileDrop);
+                if (paths != null && paths.Length > 0)
+                {
+                    HandleDroppedPaths(paths);
+                }
+            }
+        }
+
+        private void HandleDroppedPaths(string[] paths)
+        {
+            if (paths == null || paths.Length == 0) return;
+
+            string firstPdf = null;
+            foreach (string p in paths)
+            {
+                if (File.Exists(p) && p.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+                {
+                    firstPdf = p;
+                    break;
+                }
+            }
+
+            if (firstPdf != null)
+            {
+                mainTabControl.SelectedTab = tabPagePdfToImg;
+                LoadPdfDocument(firstPdf);
+            }
+            else
+            {
+                mainTabControl.SelectedTab = tabPageImgToPdf;
+                AddFilesOrDirectories(paths);
+            }
+        }
+
+        #endregion
+
+        #region ================== 图片合成 PDF 辅助逻辑 ==================
 
         private Button CreateButton(string text, int width, int height, Color backColor, Color foreColor)
         {
@@ -399,66 +1384,24 @@ namespace FinancePdfApp
                 BackColor = backColor,
                 ForeColor = foreColor,
                 FlatStyle = FlatStyle.Flat,
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                UseVisualStyleBackColor = false
             };
             btn.FlatAppearance.BorderSize = (backColor == Color.White) ? 1 : 0;
             btn.FlatAppearance.BorderColor = Color.FromArgb(203, 213, 225);
             return btn;
         }
 
-        private void MainForm_DragEnter(object sender, DragEventArgs e)
-        {
-            if (e.Data.GetDataPresent(DataFormats.FileDrop))
-                e.Effect = DragDropEffects.Copy;
-        }
-
-        private void MainForm_DragDrop(object sender, DragEventArgs e)
-        {
-            string[] paths = (string[])e.Data.GetData(DataFormats.FileDrop);
-            HandleDroppedPaths(paths);
-        }
-
-        private void HandleDroppedPaths(string[] paths)
-        {
-            List<string> collected = new List<string>();
-            foreach (string p in paths)
-            {
-                if (Directory.Exists(p))
-                {
-                    string[] extPatterns = new string[] { "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp", "*.tif", "*.tiff" };
-                    foreach (string ext in extPatterns)
-                    {
-                        collected.AddRange(Directory.GetFiles(p, ext, SearchOption.TopDirectoryOnly));
-                    }
-                }
-                else if (File.Exists(p) && IsImageFile(p))
-                {
-                    collected.Add(p);
-                }
-            }
-
-            collected.Sort(StrCmpLogicalW);
-            AddImagePaths(collected);
-        }
-
-        private bool IsImageFile(string path)
-        {
-            string ext = Path.GetExtension(path).ToLowerInvariant();
-            return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp" || ext == ".webp" || ext == ".tif" || ext == ".tiff";
-        }
-
         private void BtnAddFiles_Click(object sender, EventArgs e)
         {
             using (OpenFileDialog ofd = new OpenFileDialog())
             {
-                ofd.Title = "选择图片文件（可多选）";
-                ofd.Filter = "图片文件 (*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.tiff)|*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.tif;*.tiff|所有文件 (*.*)|*.*";
+                ofd.Title = "选择图片文件";
+                ofd.Filter = "图片文件 (*.jpg;*.jpeg;*.png;*.bmp;*.tiff)|*.jpg;*.jpeg;*.png;*.bmp;*.tiff;*.tif|所有文件 (*.*)|*.*";
                 ofd.Multiselect = true;
                 if (ofd.ShowDialog() == DialogResult.OK)
                 {
-                    List<string> files = new List<string>(ofd.FileNames);
-                    files.Sort(StrCmpLogicalW);
-                    AddImagePaths(files);
+                    AddFilesOrDirectories(ofd.FileNames);
                 }
             }
         }
@@ -467,30 +1410,56 @@ namespace FinancePdfApp
         {
             using (FolderBrowserDialog fbd = new FolderBrowserDialog())
             {
-                fbd.Description = "请选择包含图片的文件夹：";
+                fbd.Description = "选择包含票据/凭证图片的文件夹";
                 if (fbd.ShowDialog() == DialogResult.OK)
                 {
-                    HandleDroppedPaths(new string[] { fbd.SelectedPath });
+                    AddFilesOrDirectories(new string[] { fbd.SelectedPath });
                 }
             }
         }
 
-        private void AddImagePaths(List<string> files)
+        private void AddFilesOrDirectories(string[] paths)
         {
-            foreach (string file in files)
+            List<string> candidateFiles = new List<string>();
+            foreach (string p in paths)
+            {
+                if (Directory.Exists(p))
+                {
+                    string[] exts = new string[] { "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tiff", "*.tif" };
+                    foreach (string ext in exts)
+                    {
+                        try
+                        {
+                            candidateFiles.AddRange(Directory.GetFiles(p, ext, SearchOption.TopDirectoryOnly));
+                        }
+                        catch { }
+                    }
+                }
+                else if (File.Exists(p))
+                {
+                    string ext = Path.GetExtension(p).ToLowerInvariant();
+                    if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp" || ext == ".tiff" || ext == ".tif")
+                    {
+                        candidateFiles.Add(p);
+                    }
+                }
+            }
+
+            candidateFiles.Sort(new Comparison<string>(StrCmpLogicalW));
+
+            foreach (string file in candidateFiles)
             {
                 try
                 {
-                    FileInfo fi = new FileInfo(file);
                     using (Image img = Image.FromFile(file))
                     {
                         items.Add(new ImageItem
                         {
                             FilePath = file,
-                            FileName = fi.Name,
+                            FileName = Path.GetFileName(file),
                             OrigWidth = img.Width,
                             OrigHeight = img.Height,
-                            FileSizeBytes = fi.Length,
+                            FileSizeBytes = new FileInfo(file).Length,
                             Rotation = 0
                         });
                     }
@@ -503,7 +1472,6 @@ namespace FinancePdfApp
 
             UpdateListView();
 
-            // 自动设定默认输出文件名
             if (string.IsNullOrEmpty(txtOutputPath.Text) && items.Count > 0)
             {
                 string dir = Path.GetDirectoryName(items[0].FilePath);
@@ -600,10 +1568,8 @@ namespace FinancePdfApp
                             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-                            // 桌面底色
                             g.Clear(Color.FromArgb(238, 242, 246));
 
-                            // 拟真纸张缩放到预览区域 (留出16像素边距)
                             float pad = 16f;
                             float availW = boxW - pad * 2;
                             float availH = boxH - pad * 2;
@@ -616,22 +1582,18 @@ namespace FinancePdfApp
 
                             RectangleF paperRect = new RectangleF(paperPixelX, paperPixelY, paperPixelW, paperPixelH);
 
-                            // 纸张投影
                             RectangleF shadowRect = new RectangleF(paperPixelX + 4, paperPixelY + 4, paperPixelW, paperPixelH);
                             using (SolidBrush shadowBrush = new SolidBrush(Color.FromArgb(45, 0, 0, 0)))
                             {
                                 g.FillRectangle(shadowBrush, shadowRect);
                             }
 
-                            // 纸张纯白背景与边框
                             g.FillRectangle(Brushes.White, paperRect);
                             using (Pen borderPen = new Pen(Color.FromArgb(203, 213, 225), 1))
                             {
                                 g.DrawRectangle(borderPen, paperRect.X, paperRect.Y, paperRect.Width, paperRect.Height);
                             }
 
-                            // 在纸张内渲染实际内容位置
-                            // 在 PDF 中 (drawX, drawY) 为左下角；在 GDI+ 中 Y 轴向下，距离顶部为 pageH - drawY - drawH
                             float imgPixelX = paperPixelX + (float)(drawX * pageScale);
                             float imgPixelY = paperPixelY + (float)((pageH - drawY - drawH) * pageScale);
                             float imgPixelW = (float)(drawW * pageScale);
@@ -639,7 +1601,6 @@ namespace FinancePdfApp
 
                             g.DrawImage(rawBmp, imgPixelX, imgPixelY, imgPixelW, imgPixelH);
 
-                            // 若非原图且内容小于纸张，绘制极其微弱的蓝色辅助定位虚线框
                             if (paperMode != 1 && (imgPixelW < paperPixelW * 0.96f || imgPixelH < paperPixelH * 0.96f))
                             {
                                 using (Pen outlinePen = new Pen(Color.FromArgb(70, 59, 130, 246), 1))
@@ -671,7 +1632,7 @@ namespace FinancePdfApp
             out double pageW, out double pageH,
             out double drawX, out double drawY, out double drawW, out double drawH)
         {
-            if (paperMode == 1) // 适合原图尺寸 (1:1，无白边)
+            if (paperMode == 1)
             {
                 pageW = imgW;
                 pageH = imgH;
@@ -686,15 +1647,15 @@ namespace FinancePdfApp
             double longSide  = (paperMode == 2) ? 1190.55 : 841.89;
 
             bool isLandscape;
-            if (orientMode == 0) // 统一纵向 (推荐)
+            if (orientMode == 0)
             {
                 isLandscape = false;
             }
-            else if (orientMode == 2) // 统一横向
+            else if (orientMode == 2)
             {
                 isLandscape = true;
             }
-            else // 智能自适应
+            else
             {
                 isLandscape = imgW > imgH;
             }
@@ -702,7 +1663,7 @@ namespace FinancePdfApp
             pageW = isLandscape ? longSide : shortSide;
             pageH = isLandscape ? shortSide : longSide;
 
-            double margin = hasMargin ? 30.0 : 0.0; // 30 pt (~10.5 mm 舒适边距)
+            double margin = hasMargin ? 30.0 : 0.0;
             double availW = Math.Max(10.0, pageW - margin * 2.0);
             double availH = Math.Max(10.0, pageH - margin * 2.0);
 
@@ -827,7 +1788,7 @@ namespace FinancePdfApp
                 HasMargin = chkMargin.Checked
             };
 
-            worker.RunWorkerAsync(p);
+            workerImgToPdf.RunWorkerAsync(p);
         }
 
         private class GenerateParams
@@ -843,21 +1804,21 @@ namespace FinancePdfApp
             public bool HasMargin;
         }
 
-        private void Worker_DoWork(object sender, DoWorkEventArgs e)
+        private void WorkerImgToPdf_DoWork(object sender, DoWorkEventArgs e)
         {
             GenerateParams p = (GenerateParams)e.Argument;
-            byte[] pdfBytes = BuildPdf(p, worker);
+            byte[] pdfBytes = BuildPdf(p, workerImgToPdf);
             File.WriteAllBytes(p.OutputPath, pdfBytes);
             e.Result = new FileInfo(p.OutputPath).Length;
         }
 
-        private void Worker_ProgressChanged(object sender, ProgressChangedEventArgs e)
+        private void WorkerImgToPdf_ProgressChanged(object sender, ProgressChangedEventArgs e)
         {
             progressBar.Value = Math.Min(100, Math.Max(0, e.ProgressPercentage));
             lblStatus.Text = (string)e.UserState;
         }
 
-        private void Worker_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        private void WorkerImgToPdf_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
         {
             btnGenerate.Enabled = true;
             progressBar.Value = 100;
@@ -891,19 +1852,16 @@ namespace FinancePdfApp
             using (MemoryStream ms = new MemoryStream())
             {
                 List<long> offsets = new List<long>();
-                offsets.Add(0); // Object 0 dummy
+                offsets.Add(0);
 
-                // Header
                 byte[] header = Encoding.ASCII.GetBytes("%PDF-1.4\r\n%\xE2\xE3\xCF\xD3\r\n");
                 ms.Write(header, 0, header.Length);
 
                 int n = p.Items.Count;
 
-                // Object 1: Catalog
                 offsets.Add(ms.Position);
                 WriteString(ms, "1 0 obj\r\n<< /Type /Catalog /Pages 2 0 R >>\r\nendobj\r\n");
 
-                // Object 2: Pages
                 offsets.Add(ms.Position);
                 StringBuilder kids = new StringBuilder();
                 for (int i = 0; i < n; i++)
@@ -994,17 +1952,14 @@ namespace FinancePdfApp
                     int imgObjId = 4 + 3 * i;
                     int contentObjId = 5 + 3 * i;
 
-                    // Page Object
                     offsets.Add(ms.Position);
                     WriteString(ms, pageObjId + " 0 obj\r\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + pageWStr + " " + pageHStr + "] /Resources << /XObject << /Im1 " + imgObjId + " 0 R >> >> /Contents " + contentObjId + " 0 R >>\r\nendobj\r\n");
 
-                    // Image Object
                     offsets.Add(ms.Position);
                     WriteString(ms, imgObjId + " 0 obj\r\n<< /Type /XObject /Subtype /Image /Width " + finalW + " /Height " + finalH + " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " + imgBytes.Length + " >>\r\nstream\r\n");
                     ms.Write(imgBytes, 0, imgBytes.Length);
                     WriteString(ms, "\r\nendstream\r\nendobj\r\n");
 
-                    // Content Object
                     string contentStream = "q\r\n" + drawWStr + " 0 0 " + drawHStr + " " + drawXStr + " " + drawYStr + " cm\r\n/Im1 Do\r\nQ\r\n";
                     byte[] contentBytes = Encoding.ASCII.GetBytes(contentStream);
 
@@ -1012,7 +1967,6 @@ namespace FinancePdfApp
                     WriteString(ms, contentObjId + " 0 obj\r\n<< /Length " + contentBytes.Length + " >>\r\nstream\r\n" + contentStream + "endstream\r\nendobj\r\n");
                 }
 
-                // Cross-reference table
                 long xrefOffset = ms.Position;
                 WriteString(ms, "xref\r\n0 " + offsets.Count + "\r\n0000000000 65535 f \r\n");
                 for (int i = 1; i < offsets.Count; i++)
@@ -1020,7 +1974,6 @@ namespace FinancePdfApp
                     WriteString(ms, offsets[i].ToString("D10") + " 00000 n \r\n");
                 }
 
-                // Trailer
                 WriteString(ms, "trailer\r\n<< /Size " + offsets.Count + " /Root 1 0 R >>\r\nstartxref\r\n" + xrefOffset + "\r\n%%EOF\r\n");
 
                 return ms.ToArray();
@@ -1043,6 +1996,8 @@ namespace FinancePdfApp
             }
             return null;
         }
+
+        #endregion
 
         [STAThread]
         static void Main(string[] args)
